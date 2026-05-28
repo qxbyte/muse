@@ -1,32 +1,35 @@
 /**
- * 启动 banner。
+ * 启动 banner（彩虹 MUSE 字母版，无边框）。
  *
- * Logo: 5x10 紫色实心方块 + 左侧矩形凹口 + 中间两只眼睛（眼睛与凹口都用空格透出终端背景）。
- * 无边框，Claude Code 风格的简洁排版。
+ * 4 个字母各 5×5 像素，间距 2 字符，logo 总宽 26 字符 × 高 5 行。
+ * M 红 / U 橙 / S 黄 / E 绿（彩虹渐变）；✻ 青；v 亮黄；正文白。
+ * 无边框，Claude Code 风格简洁排版。
  */
 
 import React from "react";
 import { Box, Text } from "ink";
 
-// 用 Quadrant Blocks（▖▗▘▝▙▚▛▜▞▟）让每个字符代表 2×2 子像素，比 ▀▄ 再翻一倍分辨率。
-// 整体物理宽度只有 ▀▄ 版本的一半，但 `>_` 反而更细致（4 列子像素描绘 V 形 + 横线）。
-// 兼容性：macOS/Linux/Windows 主流等宽字体均支持；少数老 SSH 客户端可能渲染异常。
-const LOGO_ROWS = [
-  "▗▟█▙▖",
-  "█▙▜██",
-  "█▙█▄▟",
-  "▝██▛▘",
-] as const;
+// 每个字母 5 行 × 5 字符宽的像素图。S 顶/底完整 █████ 避免拐弯吐出。
+const LETTERS = {
+  M: ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
+  U: ["█   █", "█   █", "█   █", "█   █", " ███ "],
+  S: ["█████", "█    ", " ███ ", "    █", "█████"],
+  E: ["█████", "█    ", "████ ", "█    ", "█████"],
+} as const;
 
 const COLORS = {
-  logo: "#8B5CF6",
+  M: "#EF4444",
+  U: "#F97316",
+  S: "#EAB308",
+  E: "#22C55E",
   asterisk: "#06B6D4",
   text: "white",
   versionAccent: "#FDE047",
 } as const;
 
-const LOGO_WIDTH = 5;
-const GAP_WIDTH = 6;
+const LETTER_GAP = 2; // 字母之间的空格
+const LOGO_WIDTH = 5 * 4 + LETTER_GAP * 3; // 26
+const GAP_WIDTH = 6; // logo 到右侧文字的间距
 
 export interface StartupBannerProps {
   version: string;
@@ -35,7 +38,18 @@ export interface StartupBannerProps {
 }
 
 function LogoLine({ row }: { row: number }) {
-  return <Text color={COLORS.logo}>{LOGO_ROWS[row]}</Text>;
+  const gap = " ".repeat(LETTER_GAP);
+  return (
+    <Box flexDirection="row">
+      <Text color={COLORS.M}>{LETTERS.M[row]}</Text>
+      <Text>{gap}</Text>
+      <Text color={COLORS.U}>{LETTERS.U[row]}</Text>
+      <Text>{gap}</Text>
+      <Text color={COLORS.S}>{LETTERS.S[row]}</Text>
+      <Text>{gap}</Text>
+      <Text color={COLORS.E}>{LETTERS.E[row]}</Text>
+    </Box>
+  );
 }
 
 function BannerLine({ row, children }: { row: number; children?: React.ReactNode }) {
@@ -52,7 +66,7 @@ function BannerLine({ row, children }: { row: number; children?: React.ReactNode
 
 export function StartupBanner({ version, model, cwd }: StartupBannerProps) {
   return (
-    <Box flexDirection="column" paddingY={1}>
+    <Box flexDirection="column" paddingY={0}>
       <BannerLine row={0} />
       <BannerLine row={1}>
         <Box flexDirection="row">
@@ -67,6 +81,7 @@ export function StartupBanner({ version, model, cwd }: StartupBannerProps) {
       <BannerLine row={3}>
         <Text color={COLORS.text}>cwd:   {cwd}</Text>
       </BannerLine>
+      <BannerLine row={4} />
     </Box>
   );
 }
@@ -74,7 +89,7 @@ export function StartupBanner({ version, model, cwd }: StartupBannerProps) {
 /** 紧凑模式：终端窄于 60 列时，省略 logo，仅文字。 */
 export function CompactBanner({ version, model, cwd }: StartupBannerProps) {
   return (
-    <Box flexDirection="column" paddingY={1}>
+    <Box flexDirection="column" paddingY={0}>
       <Box flexDirection="row">
         <Text color={COLORS.asterisk}>✻</Text>
         <Text color={COLORS.text}>{" Welcome to Muse "}</Text>
