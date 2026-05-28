@@ -9,12 +9,12 @@
 import React from "react";
 import { Box, Text } from "ink";
 
-// 每个字母 5 行 × 5 字符宽的像素图。S 顶/底完整 █████ 避免拐弯吐出。
+// 每个字母 4 行 × 5 字符宽的像素图。M/U 缩 1 像素腿；S 牺牲右下挑；E 去掉一根左竖。
 const LETTERS = {
-  M: ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
-  U: ["█   █", "█   █", "█   █", "█   █", " ███ "],
-  S: ["█████", "█    ", " ███ ", "    █", "█████"],
-  E: ["█████", "█    ", "████ ", "█    ", "█████"],
+  M: ["█   █", "██ ██", "█ █ █", "█   █"],
+  U: ["█   █", "█   █", "█   █", " ███ "],
+  S: ["█████", "█    ", " ███ ", "█████"],
+  E: ["█████", "█    ", "████ ", "█████"],
 } as const;
 
 const COLORS = {
@@ -27,8 +27,8 @@ const COLORS = {
   versionAccent: "#FDE047",
 } as const;
 
-const LETTER_GAP = 2; // 字母之间的空格
-const LOGO_WIDTH = 5 * 4 + LETTER_GAP * 3; // 26
+const LETTER_GAP = 3; // 字母之间的空格（避免视觉粘连）
+const LOGO_WIDTH = 5 * 4 + LETTER_GAP * 3; // 29
 const GAP_WIDTH = 6; // logo 到右侧文字的间距
 
 export interface StartupBannerProps {
@@ -39,23 +39,24 @@ export interface StartupBannerProps {
 
 function LogoLine({ row }: { row: number }) {
   const gap = " ".repeat(LETTER_GAP);
+  // Text 嵌套：颜色片段共用一个 Text 容器，间距空格不会被 flex layout 吃掉。
   return (
-    <Box flexDirection="row">
+    <Text>
       <Text color={COLORS.M}>{LETTERS.M[row]}</Text>
-      <Text>{gap}</Text>
+      {gap}
       <Text color={COLORS.U}>{LETTERS.U[row]}</Text>
-      <Text>{gap}</Text>
+      {gap}
       <Text color={COLORS.S}>{LETTERS.S[row]}</Text>
-      <Text>{gap}</Text>
+      {gap}
       <Text color={COLORS.E}>{LETTERS.E[row]}</Text>
-    </Box>
+    </Text>
   );
 }
 
 function BannerLine({ row, children }: { row: number; children?: React.ReactNode }) {
   return (
     <Box flexDirection="row">
-      <Box width={LOGO_WIDTH}>
+      <Box minWidth={LOGO_WIDTH}>
         <LogoLine row={row} />
       </Box>
       <Box width={GAP_WIDTH} />
@@ -81,7 +82,6 @@ export function StartupBanner({ version, model, cwd }: StartupBannerProps) {
       <BannerLine row={3}>
         <Text color={COLORS.text}>cwd:   {cwd}</Text>
       </BannerLine>
-      <BannerLine row={4} />
     </Box>
   );
 }
