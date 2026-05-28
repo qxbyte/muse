@@ -2,28 +2,18 @@
 
 > A TypeScript agent CLI built around OpenAI-compatible APIs. First-class support for self-hostable and Chinese LLMs (DeepSeek, Qwen, Kimi, GLM, Ollama, MiMo).
 
-**状态：v0.1 MVP 搭建中**。API 不稳定，配置格式可能调整。
+**状态：v0.1 MVP**。API 可能调整，请关注 release notes。
 
 ---
 
-## 是什么
+## 目录
 
-一个 TypeScript 写的命令行 Agent，Ink TUI 交互。LLM 后端走 OpenAI 兼容协议，国产模型 / 本地模型 / 自部署网关都是一等公民。
-
-适合：
-
-- 在国内网络环境下需要一个能跑的 agent CLI
-- 想用 DeepSeek / Qwen / Kimi / GLM / MiMo / Ollama / 自建 vLLM 等
-- 希望 model 可热切换、凭证不写源码、会话本地持久化
-
----
-
-## 前置要求
-
-- **Node.js >= 20**（必须；用了原生 fetch / `node:fs/promises` 等）
-- **npm**（默认；不要换 pnpm / bun，未做兼容测试）
-- **git**
-- 一个 OpenAI 兼容协议的 LLM 端点 + apiKey（DeepSeek / Qwen / MiMo / 自建均可）
+- [安装](#安装)
+- [快速开始](#快速开始)
+- [配置详解](#配置详解)
+- [使用](#使用)
+- [常见问题](#常见问题)
+- [License](#license)
 
 ---
 
@@ -36,55 +26,111 @@ npm install -g @qxbyte/muse
 muse --version
 ```
 
-> 包名是 `@qxbyte/muse`（scoped），CLI 命令名是 `muse`。需要 Node 20+。
+需要 **Node.js >= 20**。包名 `@qxbyte/muse`（scoped），CLI 命令名 `muse`。
 
 ### 方式 B：从源码
 
 ```bash
-# 1. 拉源码
 git clone https://github.com/qxbyte/muse.git
 cd muse
-
-# 2. 装依赖
 npm install
-
-# 3. 构建（产物在 dist/）
 npm run build
+node ./dist/cli.js --version
+```
 
-# 4. 验证
-node ./dist/cli.js --version    # 应输出 0.1.0
-node ./dist/cli.js --help
+让命令全局可用：
 
-# 5.（可选）全局可用，二选一：
-#    A) npm link（推荐）—— 在仓库目录下：
+```bash
+# 在仓库目录
 npm link
 muse --version
-
-#    B) shell alias —— 仅当前 shell 生效：
-echo 'alias muse="node $(pwd)/dist/cli.js"' >> ~/.zshrc
-source ~/.zshrc
 ```
 
 ---
 
-## 配置
+## 快速开始
 
-muse 用**两个文件**分工：
+最少 3 步把 muse 跑起来。
 
-| 文件 | 角色 |
-|---|---|
-| `~/.muse/models.json` | 模型仓库：你能调用的所有模型 + apiKey |
-| `~/.muse/settings.json` | 运行偏好：当前激活哪个 model、UI、权限规则 |
+### 1. 准备一个 LLM 端点的 apiKey
 
-### 1. 建 `~/.muse/models.json`
+任选一个：
 
-凭证**强烈推荐**放到 `~/.muse/models.local.json`（自动 gitignore 防误传）或用 `${ENV_VAR}` 占位符。
+| Provider | 申请页 | env 变量名（习惯） |
+|---|---|---|
+| DeepSeek | https://platform.deepseek.com | `DEEPSEEK_API_KEY` |
+| Qwen (阿里百炼) | https://bailian.console.aliyun.com | `DASHSCOPE_API_KEY` |
+| Moonshot (Kimi) | https://platform.moonshot.cn | `MOONSHOT_API_KEY` |
+| 智谱 GLM | https://open.bigmodel.cn | `ZHIPU_API_KEY` |
+| OpenAI | https://platform.openai.com | `OPENAI_API_KEY` |
+| Ollama (本地) | https://ollama.com | 不需要 |
 
-#### 示例 A：DeepSeek
+### 2. 建模型仓库 `~/.muse/models.json`
 
 ```bash
 mkdir -p ~/.muse
 cat > ~/.muse/models.json <<'EOF'
+{
+  "models": [
+    {
+      "id": "deepseek-chat",
+      "vendor": "DeepSeek",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKey": "${DEEPSEEK_API_KEY}",
+      "supportsToolCall": true
+    }
+  ],
+  "availableModels": ["deepseek-chat"]
+}
+EOF
+```
+
+### 3. 设环境变量并启动
+
+```bash
+export DEEPSEEK_API_KEY=sk-...     # 写入 ~/.zshrc 或 ~/.bashrc 持久化
+muse                                # 进交互模式
+```
+
+第一次启动会自动写 `~/.muse/settings.json` 记录默认模型；在 TUI 里输入 `/models` 可以切换。
+
+---
+
+## 配置详解
+
+muse 用**两个文件**分工：
+
+```
+~/.muse/
+├── models.json           # 模型仓库：你能调用的所有模型 + 凭证
+├── models.local.json     # 同名兜底，放明文 apiKey（自动 gitignore，优先级更高）
+├── settings.json         # 运行偏好：当前激活的 model / UI / 权限
+├── settings.local.json   # 同名兜底，仅你本机生效
+├── sessions/             # 会话 JSONL 历史
+└── logs/                 # 日志（运行报错排查用）
+```
+
+### 模型仓库：`~/.muse/models.json`
+
+完整字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `id` | string | ✅ | 模型唯一标识，**你自己起的名字**；slash 命令和 settings.json 用它引用 |
+| `name` | string | | 显示名，缺省 = id |
+| `vendor` | string | | 厂商名，只在 `/models` selector 里分组显示 |
+| `baseUrl` | string | ✅ | OpenAI 兼容协议**基址**（如 `https://api.deepseek.com/v1`）；填全 endpoint `.../v1/chat/completions` 也行，会自动剥后缀；别名字段 `url` 等价 |
+| `apiKey` | string | | 凭证；支持 `${ENV_VAR}` 占位符（推荐）；本地 Ollama 等可不填 |
+| `supportsToolCall` | bool | | 是否支持 function calling，默认 `true` |
+| `supportsImages` | bool | | 是否支持视觉，默认 `false` |
+| `contextWindow` | number | | 上下文窗口（tokens），用于 `/cost` 估算 |
+| `availableModels` | string[] | | 顶层数组；决定 `/models` selector 里显示哪些 id（不填 = 全部 models） |
+
+### 多 Provider 配置示例
+
+把多个一起放进 `models` 数组，按需在 `availableModels` 里挑：
+
+```json
 {
   "models": [
     {
@@ -100,50 +146,65 @@ cat > ~/.muse/models.json <<'EOF'
       "baseUrl": "https://api.deepseek.com/v1",
       "apiKey": "${DEEPSEEK_API_KEY}",
       "supportsToolCall": false
-    }
-  ],
-  "availableModels": ["deepseek-chat", "deepseek-reasoner"]
-}
-EOF
-
-export DEEPSEEK_API_KEY=sk-...   # 写到 ~/.zshrc 持久化
-```
-
-#### 示例 B：本地 Ollama
-
-```json
-{
-  "models": [
+    },
+    {
+      "id": "qwen-plus",
+      "vendor": "Qwen",
+      "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "apiKey": "${DASHSCOPE_API_KEY}",
+      "supportsToolCall": true
+    },
+    {
+      "id": "kimi-k2",
+      "vendor": "Moonshot",
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "apiKey": "${MOONSHOT_API_KEY}",
+      "supportsToolCall": true
+    },
+    {
+      "id": "glm-4-plus",
+      "vendor": "GLM",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "apiKey": "${ZHIPU_API_KEY}",
+      "supportsToolCall": true
+    },
+    {
+      "id": "gpt-4o-mini",
+      "vendor": "OpenAI",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "${OPENAI_API_KEY}",
+      "supportsToolCall": true,
+      "supportsImages": true
+    },
     {
       "id": "llama3.1",
       "vendor": "Ollama",
       "baseUrl": "http://localhost:11434/v1",
       "supportsToolCall": true
+    },
+    {
+      "id": "my-self-hosted",
+      "vendor": "Custom",
+      "baseUrl": "https://my-vllm-gateway.example.com/v1",
+      "apiKey": "${MY_GW_KEY}",
+      "supportsToolCall": true
     }
   ],
-  "availableModels": ["llama3.1"]
+  "availableModels": [
+    "deepseek-chat",
+    "deepseek-reasoner",
+    "qwen-plus",
+    "kimi-k2",
+    "glm-4-plus",
+    "gpt-4o-mini",
+    "llama3.1"
+  ]
 }
 ```
 
-本地 endpoint 不需要 apiKey。
+### 运行偏好：`~/.muse/settings.json`
 
-#### 字段说明
-
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `id` | 是 | 模型唯一标识，自定义；slash 命令引用它 |
-| `vendor` | 否 | 厂商名，只在 selector 里显示 |
-| `baseUrl` | 是 | OpenAI 兼容协议基址（如 `https://api.deepseek.com/v1`）；也可填 `url` 别名；若误填 `.../chat/completions` 会自动剥后缀 |
-| `apiKey` | 否 | 凭证；支持 `${ENV_VAR}` 占位符 |
-| `supportsToolCall` | 否 | 工具调用能力，默认 `true` |
-| `supportsImages` | 否 | 视觉能力，默认 `false` |
-| `contextWindow` | 否 | 上下文窗口大小（tokens），用于 `/cost` 估算 |
-| `availableModels` | — | 顶层数组；决定 `/models` selector 里出现哪些 id（不填 = 全部） |
-
-### 2. 建 `~/.muse/settings.json`（首次启动会自动写）
-
-```bash
-cat > ~/.muse/settings.json <<'EOF'
+```json
 {
   "llm": {
     "model": "deepseek-chat"
@@ -158,28 +219,77 @@ cat > ~/.muse/settings.json <<'EOF'
     "defaultMode": "ask"
   }
 }
-EOF
 ```
 
-settings.json 里的 `llm.model` 必须**匹配**某个 models.json 里的 id；`/models` 选中模型后会自动写回这个字段。
+字段：
 
-### 3. （可选）项目级覆盖
+| 字段 | 说明 |
+|---|---|
+| `llm.model` | 当前激活的 model id，必须在 models.json 的 models 数组里能找到 |
+| `ui.lang` | UI 文案语言，`zh-CN` / `en` |
+| `ui.showBanner` | 启动是否显示彩虹 banner |
+| `permissions.allow` | 直接放行的工具名列表（如 `Read`、`Bash(npm:*)`） |
+| `permissions.ask` | 调用前要 y/n 确认的工具 |
+| `permissions.deny` | 永远拒绝的工具 |
+| `permissions.defaultMode` | `strict`（未匹配 → ask）、`relaxed`（未匹配 → allow）、`ask`（默认） |
 
-在你工作目录里建 `.muse/settings.json` 或 `.muse/settings.local.json`，对应字段会覆盖全局 settings。`*.local.json` 已被项目 `.gitignore` 忽略，放凭证安全。
+> 用 `/models` 切换模型时，muse 会自动写回 `llm.model`，**不需要手动改**。
+
+### 凭证安全
+
+按推荐顺序：
+
+1. **环境变量 + `${VAR}` 占位符**（最安全）
+   ```bash
+   # ~/.zshrc 或 ~/.bashrc
+   export DEEPSEEK_API_KEY=sk-...
+   export MOONSHOT_API_KEY=sk-...
+   ```
+   models.json 里 `"apiKey": "${DEEPSEEK_API_KEY}"`，启动时 muse 展开。
+
+2. **`~/.muse/models.local.json`**（明文 key）
+   - 文件名带 `.local.json`，**所有 `*.local.json` 项目级已 gitignore**
+   - 推荐 `chmod 600 ~/.muse/models.local.json`
+   - 同 id 时 `models.local.json` 覆盖 `models.json`，可以只在 local 里放凭证
+
+3. **`~/.muse/models.json` 直接写明文**（不推荐）
+   - 仅当你 100% 确定该机器 + 账号是私有
+   - 任何同步盘（iCloud、Dropbox）都会让它扩散
+
+muse 自身的安全保证：
+- 日志里 apiKey **自动脱敏**（前 4 + 后 4，中间打码）
+- 切换 model 时 apiKey 注入 `process.env.MUSE_ACTIVE_API_KEY`，业务代码只透过 env 取，不持有副本
+- 进程退出后 env 不残留，不污染你的 shell
+
+### 配置文件加载优先级
+
+由低到高（高的覆盖低的）：
+
+1. 内置默认值
+2. `~/.muse/settings.json`（全局共享）
+3. `<项目>/.muse/settings.json`（项目级，可入 git）
+4. `<项目>/.muse/settings.local.json`（项目级，已 gitignore）
+5. 环境变量 `MUSE_PROVIDER` / `MUSE_MODEL`
+6. CLI flags `-p` / `-m`
+
+`models.json` 同理（仅 `~/.muse/` 层，无项目级）。
 
 ---
 
-## 启动
+## 使用
+
+### 启动方式
 
 ```bash
-muse                              # 交互模式（TUI）
-muse "总结一下 src/cli.tsx"       # 一次性 prompt 模式
-cat bug.log | muse "找出根因"     # 管道输入
-muse --debug                      # 详细日志（写到 ~/.muse/logs/<date>.jsonl）
+muse                                      # 交互模式（TUI）
+muse "总结一下 src/cli.tsx"               # 一次性 prompt
+cat bug.log | muse "找出根因"             # 管道输入
+muse --quiet "..."                        # 最小输出，适合脚本
+muse --debug                              # 详细日志到 ~/.muse/logs/<date>.jsonl
 muse --help
 ```
 
-CLI flag：
+### CLI 参数
 
 | flag | 说明 |
 |---|---|
@@ -188,12 +298,13 @@ CLI flag：
 | `--no-banner` | 不显示启动 banner |
 | `--quiet` | 最小输出（隐含 `--no-banner`） |
 | `--debug` | 详细日志 |
+| `--continue` | 恢复上次会话（部分实现） |
+| `-v, --version` | 打印版本 |
+| `-h, --help` | 打印帮助 |
 
----
+### Slash 命令
 
-## 内置 Slash 命令
-
-启动后在 TUI 输入 `/` 会自动弹出补全列表，↑↓ 导航，Tab/Enter 补全。
+启动后在 TUI 输入 `/` 会弹出补全列表，↑↓ 导航，Tab/Enter 接受。
 
 | 命令 | 作用 |
 |---|---|
@@ -201,117 +312,111 @@ CLI flag：
 | `/clear` | 清空当前会话 |
 | `/cost` | 当前会话 token 用量 + 费用估算 |
 | `/status` | 模型 / cwd / 历史 / token 综合状态 |
-| `/models` | 弹出 selector 切换模型（写回 settings.json + 注入 env） |
-| `/config` | 显示 effective 配置（apiKey 脱敏）；`/config reload` 热加载；`/config path` 看路径 |
-| `/mcp` | MCP server 状态（v0.1 占位，v0.3 真接） |
+| `/models` | 弹出 selector，↑↓ + Enter 切换模型（自动写回 settings.json + 注入 env） |
+| `/config` | 显示 effective 配置（apiKey 脱敏） |
+| `/config reload` | 不重启 muse 热加载所有配置 |
+| `/config path` | 列出配置文件路径 |
 | `/compact` | 摘要老消息释放上下文（`--keep N` 保留最近 N 条） |
 | `/resume` | ↑↓ 选历史会话加载；带参 `/resume <id-prefix>` 直接加载 |
+| `/mcp` | MCP server 状态 |
 | `/quit` / `/exit` | 退出 |
 
+### 内置工具
+
+LLM 在执行任务时可调用：
+
+| 工具 | 作用 |
+|---|---|
+| `Read` | 读文件，支持 offset / limit 分页 |
+| `Write` | 写文件（必须先 Read 过才能 Write，防误覆盖） |
+| `Edit` | 精确字符串替换（比全文重写省 token） |
+| `Grep` | ripgrep 包装 |
+| `Glob` | 文件匹配 |
+| `Bash` | 执行 shell 命令；危险命令（rm -rf / sudo / curl…|sh）硬拒绝 |
+
+所有写操作 / Bash 默认走权限弹窗（y/n 确认），权限模式可调（见下）。
+
+### 权限模式（Shift+Tab 循环）
+
+底部状态栏显示当前模式：
+
+| 模式 | 行为 | 何时用 |
+|---|---|---|
+| `default` | 按 settings.permissions 规则判定 | 日常 |
+| `acceptEdits` | Edit / Write 自动放行，其他不变 | 信任的批量改 |
+| `plan` | 只允许只读工具（Read / Grep / Glob），让 LLM"想清楚再动手" | 探索代码、定方案 |
+| `bypassPermissions` | 除 deny 列表与硬拒绝命令外全部放行 | 沙箱环境、CI |
+
+按 `Shift+Tab` 在四档间循环；不持久化，重启回到 default。
+
+### 切换模型
+
+两种方式：
+
+1. **TUI 内**：输入 `/models` → ↑↓ 选 → Enter，自动写回 settings.json + 注入 env
+2. **命令行临时**：`muse -m kimi-k2 "..."`（不持久化）
+3. **手动编辑**：改 `~/.muse/settings.json` 里的 `llm.model`，TUI 里 `/config reload` 热加载
+
+### Markdown 渲染
+
+assistant 回复里的 markdown（标题、列表、代码块、表格、链接）会被渲染成富文本。流式输出过程中是纯文本，本轮结束后自动替换成格式化版本。
+
 ---
 
-## 目录结构
+## 常见问题
+
+### `/models` 显示 "No models registry found"
+
+`~/.muse/models.json` 不存在或解析失败。
+
+- 路径是否正确？`ls ~/.muse/models.json`
+- JSON 格式是否合法？`jq . ~/.muse/models.json`
+- 字段错位？看 `~/.muse/logs/<today>.jsonl` 里的 warn
+
+### `Model "..." has no apiKey in env MUSE_ACTIVE_API_KEY`
+
+启动时 apiKey 没注入到 env。检查：
+
+1. models.json 里 `apiKey` 字段是否填了
+2. 用了 `${ENV_VAR}` 占位符？对应 env 是否在 shell 里 export 过？  
+   ```bash
+   echo $DEEPSEEK_API_KEY    # 应有值
+   ```
+3. 改完 `~/.zshrc` 后是否 `source ~/.zshrc`？
+
+### 启动时一段 zod warn JSON
+
+`~/.muse/settings.json` 字段不匹配 schema。看 warn 里的 `path` 列就知道哪个字段错了，照着改。
+
+### Ollama 本地模型连不上
+
+- Ollama 服务跑没？`curl http://localhost:11434/api/tags`
+- `baseUrl` 必须填 `http://localhost:11434/v1`（带 `/v1`），不能只填 host
+- 防火墙 / 端口被占用？
+
+### 国产 provider 工具调用失败
+
+部分国产 provider 对 OpenAI function calling 协议的实现有小差异。如果 LLM 看起来"忽略工具"或"乱调"：
+
+- 试着把 `supportsToolCall` 改成 `false` 强行降级到纯对话
+- 切到 DeepSeek / Qwen / Moonshot 等兼容性较好的 provider 验证
+- 查 `~/.muse/logs/<today>.jsonl` 看 LLM 实际响应内容
+
+### 想要恢复昨天的会话
 
 ```
-muse/
-  src/
-    cli.tsx              # CLI 入口（commander + Ink）
-    app.tsx              # Ink 根组件
-    components/          # TUI 组件
-    llm/                 # LLM 抽象层（providers + pricing）
-    loop/                # Agent loop + 上下文压缩
-    tools/               # 工具系统 + 内置工具（Read/Write/Edit/Bash/Grep/Glob）
-    slash/               # Slash 命令系统
-    config/              # 配置加载（settings + models）
-    session/             # JSONL 会话持久化
-    permission/          # 权限模型（三态 + 4 档 mode）
-    mcp/                 # MCP 状态查询（占位）
-    log/                 # logger
-  dist/                  # 构建产物（不入 git）
+muse           # 进 TUI
+/resume        # ↑↓ 选 → Enter
 ```
 
----
+会话存在 `~/.muse/sessions/<project-hash>/<uuid>.jsonl`，按 cwd 分目录。
 
-## 凭证安全
-
-- **绝不**把明文 apiKey 写进 `models.json` 之外的文件，更不要写进源码
-- 凭证有三种推荐放法（优先级从高到低）：
-  1. 环境变量 `${VAR}` 占位符 + shell 配置（最安全，方便 CI）
-  2. `~/.muse/models.local.json`（chmod 600；项目级 `*.local.json` 已 gitignore）
-  3. `~/.muse/models.json` 明文（仅当你 100% 确定该机器/账号是私有）
-- muse 日志里 apiKey 自动脱敏（前 4 + 后 4）
-- 切换 model 时，apiKey 注入 `process.env.MUSE_ACTIVE_API_KEY`，业务代码只透过 env 取，不持有副本
-
----
-
-## 已知限制（v0.1）
-
-- ❌ MCP 协议接入未实现（v0.3 路线图）；`/mcp` 仅显示配置
-- ❌ Skill 加载未实现（v0.2）
-- ❌ Subagent 未实现（v0.2）
-- ❌ Hooks 未实现（v1.0）
-- ❌ 自动上下文压缩未实现（`/compact` 手动可用）
-- ⚠️ Anthropic provider 未实现（只支持 OpenAI 兼容协议族）
-- ⚠️ `--continue` flag 未完整接通
-- ⚠️ TUI 输入框历史导航（↑↓ 翻历史）未实现，被 `/models` autocomplete 占用
-
----
-
-## 路线图
-
-- **v0.1 MVP（当前）**：CLI / LLM / Agent loop / Read/Write/Edit/Bash/Grep/Glob / 权限模型 / Session / 9 个 slash 命令
-- **v0.2**：Skill 加载、Slash command 文件加载、Subagent、自动 compact
-- **v0.3**：MCP 客户端、Anthropic provider、多 provider 能力矩阵
-- **v0.4**：长期 Memory、TodoWrite、单二进制分发
-- **v1.0**：Hooks、沙箱（sandbox-exec）、自定义 subagent 类型
-
----
-
-## 设计文档
-
-宏观设计 / 实现日志 / 子规范在 `CLAUDE.md` 关联的文档库（私有 Obsidian vault），代码注释引用对应章节（如 `// 见 muse-design.md §7.2`）。
-
----
-
-## 发布到 npm（维护者）
-
-发布完全自动化：在 GitHub 上 publish 一个 release，`.github/workflows/release.yml` 会跑 typecheck + build + `npm publish --provenance`。
-
-### 一次性准备（首次发布前）
-
-1. 在 [npm.com](https://www.npmjs.com/) 注册账号 `qxbyte`（与 GitHub 用户名一致，确保 scope `@qxbyte/` 归属正确）
-2. npm.com → 头像菜单 → **Access Tokens** → **Generate New Token** → **Classic** → 选 **Automation**（CI 专用）
-3. 复制 token（`npm_...` 开头）
-4. GitHub repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
-   - Name: `NPM_TOKEN`
-   - Value: 粘贴上一步的 token
-
-### 每次发布
+### 如何卸载
 
 ```bash
-# 1. 改 package.json 的 version（语义化版本：0.1.0 → 0.1.1 / 0.2.0 / 1.0.0）
-npm version patch    # 或 minor / major；这条会自动 commit 并打 tag vX.Y.Z
-
-# 2. 推 commit + tag
-git push && git push --tags
-
-# 3. 到 GitHub Releases 页面（https://github.com/qxbyte/muse/releases/new）
-#    - Tag: 选刚 push 的 vX.Y.Z
-#    - Title: vX.Y.Z
-#    - Description: 写改动说明
-#    - 点 "Publish release"
+npm uninstall -g @qxbyte/muse
+rm -rf ~/.muse                            # 清配置 / 会话 / 日志（可选）
 ```
-
-GitHub Actions 会自动触发，可在 repo Actions 页面看进度。校验 tag 必须与 package.json version 一致（不然 workflow 主动 fail，避免发错版本）。
-
-发布成功后，所有人能用 `npm install -g @qxbyte/muse` 装上。
-
-### 失败排查
-
-- `403 Forbidden`：NPM_TOKEN 失效 / 没权限 publish `@qxbyte/`
-- `version already published`：package.json 没 bump，重复发了同 version
-- `tag does not match package.json`：tag 是 v0.1.1 但 package.json 还是 0.1.0
-- typecheck/build fail：本地先跑 `npm run typecheck && npm run build` 排错再 push
 
 ---
 
