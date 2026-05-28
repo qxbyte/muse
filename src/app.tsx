@@ -130,6 +130,15 @@ export function App({
   const messagesRef = useRef<Message[]>(initialMessages ?? []);
 
   const [input, setInput] = useState("");
+  // inputRemountKey 给 TextInput 做 remount —— ink-text-input 在 value 被外部强制修改时
+  // cursor 不会跟随到末尾，bump 一个 key 让组件重挂载，新实例 cursor 默认在 value.length。
+  // onChange 用 setInput 不能 bump（每次按键都 remount 会丢 cursor）；只有补全 / 清空等
+  // "外部 setValue" 操作走 commitInput。
+  const [inputRemountKey, setInputRemountKey] = useState(0);
+  const commitInput = (value: string) => {
+    setInput(value);
+    setInputRemountKey((k) => k + 1);
+  };
   const [pending, setPending] = useState<PermissionRequest | null>(null);
   const [picker, setPicker] = useState<ModelPickerRequest | null>(null);
   const [sessionPicker, setSessionPicker] = useState<SessionPickerRequest | null>(null);
@@ -226,9 +235,9 @@ export function App({
         setAutocompleteIndex((i) => (i + 1) % len);
       } else if (key.tab) {
         const picked = autocomplete.matches[autocompleteIndex];
-        if (picked) setInput(`/${picked.name} `);
+        if (picked) commitInput(`/${picked.name} `);
       } else if (key.escape) {
-        setInput("");
+        commitInput("");
       }
     },
     { isActive: state.status === "idle" && !pending && !picker && !sessionPicker },
@@ -307,7 +316,7 @@ export function App({
         );
         if (!exact) {
           const picked = autocomplete.matches[autocompleteIndex] ?? autocomplete.matches[0];
-          setInput(`/${picked.name} `);
+          commitInput(`/${picked.name} `);
           return;
         }
       }
@@ -315,7 +324,7 @@ export function App({
       const parsed = parseSlash(trimmed);
       if (parsed) {
         const cmd = slash.get(parsed.name);
-        setInput("");
+        commitInput("");
         if (!cmd) {
           appendAssistantText(`Unknown command: /${parsed.name}. Try /help.`);
           return;
@@ -348,7 +357,7 @@ export function App({
         return;
       }
 
-      setInput("");
+      commitInput("");
       dispatch({ type: "user_submit" });
       try {
         await agentRef.current?.runTurn(trimmed);
@@ -435,7 +444,7 @@ export function App({
         <Box flexDirection="column">
           <Box marginTop={1}>
             <Text color="cyan">{"> "}</Text>
-            <TextInput value={input} onChange={setInput} onSubmit={handleSubmit} />
+            <TextInput key={inputRemountKey} value={input} onChange={setInput} onSubmit={handleSubmit} />
           </Box>
           {autocomplete && autocomplete.matches.length > 0 && (
             <SlashAutocomplete matches={autocomplete.matches} index={autocompleteIndex} />
