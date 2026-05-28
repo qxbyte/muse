@@ -14,9 +14,16 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import type { z } from "zod";
 import { SettingsSchema, type Settings } from "./types.js";
 import { expandEnvVars } from "./_env.js";
 import { log } from "../log/index.js";
+
+function formatZodIssues(issues: z.ZodIssue[]): string {
+  return issues
+    .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+    .join("; ");
+}
 
 const DEFAULTS: Settings = {
   llm: {
@@ -104,7 +111,7 @@ export async function loadSettings(cwd: string = process.cwd()): Promise<LoadedS
         merged = deepMerge(merged, parsed.data);
         sources.push(path);
       } else {
-        log.warn(`Invalid settings at ${path}: ${parsed.error.message}`);
+        log.warn(`Invalid settings at ${path}: ${formatZodIssues(parsed.error.issues)}`);
       }
     }
   }

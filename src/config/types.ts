@@ -10,9 +10,12 @@ export const ProviderConfigSchema = z.object({
   extraHeaders: z.record(z.string()).optional(),
 }).passthrough();
 
+// 新设计：model id 由 ~/.muse/models.json 提供，settings.json 只保留 active 选择。
+// provider 字段仅用于"无 models.json 时的 fallback 路径"（设计文档 §8 兼容层）。
+// 因此两者都可选——/models 切换只写 model，不写 provider。
 export const LLMConfigSchema = z.object({
-  provider: z.string().describe("Provider preset name or custom."),
-  model: z.string(),
+  provider: z.string().optional().describe("Fallback provider preset (only used when no models.json entry matches)."),
+  model: z.string().optional().describe("Active model id; should match an id in models.json."),
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().positive().optional(),
 });
