@@ -4,8 +4,8 @@
  * 触发条件：input.startsWith("/") && !input.includes(" ")（用户在输入命令名阶段）
  * 进入参数阶段（空格之后）→ overlay 关闭，让用户安静地输入参数
  *
- * 显示：紫色 / + 白色 name + dim args + dim description
- *       focused 行用 inverse 高亮
+ * 显示：默认色 / + name + dim description
+ *       focused 行整条命令名变紫色 + bold（不用 inverse 背景条）
  *       超过 maxVisible 行折叠尾部
  *
  * 渲染由 App 控制，本组件是纯展示。
@@ -61,11 +61,11 @@ export function SlashAutocomplete({ matches, index, maxVisible = DEFAULT_MAX }: 
 function Row({ cmd, focused, nameWidth }: { cmd: SlashCommand; focused: boolean; nameWidth: number }) {
   const head = cmd.argsHint ? `${cmd.name} ${cmd.argsHint}` : cmd.name;
   const padded = head.padEnd(nameWidth);
+  // focused 整条命令名变紫色 + bold；非 focused 用默认色
   return (
     <Box flexDirection="row">
-      <Text inverse={focused}>
-        <Text color={SLASH_COLOR} bold>{"/"}</Text>
-        <Text bold={focused}>{padded}</Text>
+      <Text color={focused ? SLASH_COLOR : undefined} bold={focused}>
+        {"/"}{padded}
       </Text>
       <Text>{"   "}</Text>
       <Text dimColor>{cmd.description}</Text>
