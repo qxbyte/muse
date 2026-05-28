@@ -1,6 +1,6 @@
 # Muse
 
-> A Claude Code-style agent CLI. Provider-agnostic. First-class support for Chinese / self-hostable LLMs (DeepSeek, Qwen, Kimi, GLM, Ollama, MiMo).
+> A TypeScript agent CLI built around OpenAI-compatible APIs. First-class support for self-hostable and Chinese LLMs (DeepSeek, Qwen, Kimi, GLM, Ollama, MiMo).
 
 **状态：v0.1 MVP 搭建中**。API 不稳定，配置格式可能调整。
 
@@ -8,13 +8,13 @@
 
 ## 是什么
 
-Claude Code 风格的命令行 Agent，TypeScript + Ink TUI。LLM 后端默认走 OpenAI 兼容协议，国产模型 / 本地模型 / 自部署网关都是一等公民。
+一个 TypeScript 写的命令行 Agent，Ink TUI 交互。LLM 后端走 OpenAI 兼容协议，国产模型 / 本地模型 / 自部署网关都是一等公民。
 
-设计借鉴 Claude Code 的命令体验（slash 命令、目录结构、约定），但不依赖 Anthropic API。适合：
+适合：
 
-- 在国内网络环境下需要 Claude Code 体验
-- 想用 DeepSeek / Qwen / Kimi / GLM / Ollama / 自建 vLLM 等
-- 希望 model 可热切换、凭证不写源码
+- 在国内网络环境下需要一个能跑的 agent CLI
+- 想用 DeepSeek / Qwen / Kimi / GLM / MiMo / Ollama / 自建 vLLM 等
+- 希望 model 可热切换、凭证不写源码、会话本地持久化
 
 ---
 

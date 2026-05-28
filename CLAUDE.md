@@ -1,6 +1,6 @@
 # Muse 项目约束
 
-> Claude Code 在本仓库工作的硬约束。项目介绍 / 设计 / 路线图 / 目录结构 → 见文档库
+> 在本仓库工作的 AI 编码助手的硬约束。项目介绍 / 设计 / 路线图 / 目录结构 → 见文档库
 > `/Volumes/External HD/Obsidian/Notes/Ideas/Muse/`。本文件**只**列规则。
 
 ---
@@ -69,4 +69,4 @@ Node.js >= 20 · TypeScript `strict` · tsup · vitest · Ink · commander · Ve
 
 - 跑不通 / 装不上 / 缺权限 → **不**绕过；在 `implementation-log.md` 留 TODO 让用户处理
 - 设计文档冲突 / 缺失 → 按最合理推断走，在 `implementation-log.md` 标注 `[需确认]`
-- 命名 / 接口不确定 → 选最像 Claude Code 的方式（生态兼容优先）
+- 命名 / 接口不确定 → 选生态最通用的方式（OpenAI 兼容协议 / MCP / 主流 npm 包惯例）

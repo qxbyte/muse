@@ -3,7 +3,7 @@
  *
  * 4 个字母各 5×5 像素，间距 2 字符，logo 总宽 26 字符 × 高 5 行。
  * M 红 / U 橙 / S 黄 / E 绿（彩虹渐变）；✻ 青；v 亮黄；正文白。
- * 无边框，Claude Code 风格简洁排版。
+ * 无边框，简洁排版，对齐右侧三行信息：✻ Welcome / model / cwd。
  */
 
 import React from "react";

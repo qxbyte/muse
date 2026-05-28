@@ -1,6 +1,6 @@
 /**
  * Read 工具：读取本地文件，支持 offset/limit 分页。
- * 设计对齐 Claude Code：返回带行号的 `cat -n` 格式。
+ * 返回带行号的 `cat -n` 格式，方便 LLM 引用具体行做编辑。
  */
 
 import { readFile, stat } from "node:fs/promises";

@@ -25,7 +25,7 @@ async function main() {
 
   program
     .name("muse")
-    .description("A Claude Code-style agent CLI. Provider-agnostic. First-class support for Chinese / self-hostable LLMs.")
+    .description("A TypeScript agent CLI built around OpenAI-compatible APIs. First-class support for self-hostable and Chinese LLMs.")
     .version(VERSION, "-v, --version", "print version");
 
   program
