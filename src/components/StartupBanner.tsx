@@ -9,12 +9,12 @@
 import React from "react";
 import { Box, Text } from "ink";
 
-// 每个字母 4 行 × 5 字符宽的像素图。M/U 缩 1 像素腿；S 牺牲右下挑；E 去掉一根左竖。
+// 每个字母 5 行 × 5 字符宽的像素图。S 顶/底完整 █████ 避免拐弯吐出。
 const LETTERS = {
-  M: ["█   █", "██ ██", "█ █ █", "█   █"],
-  U: ["█   █", "█   █", "█   █", " ███ "],
-  S: ["█████", "█    ", " ███ ", "█████"],
-  E: ["█████", "█    ", "████ ", "█████"],
+  M: ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
+  U: ["█   █", "█   █", "█   █", "█   █", " ███ "],
+  S: ["█████", "█    ", " ███ ", "    █", "█████"],
+  E: ["█████", "█    ", "████ ", "█    ", "█████"],
 } as const;
 
 const COLORS = {
@@ -38,18 +38,22 @@ export interface StartupBannerProps {
 }
 
 function LogoLine({ row }: { row: number }) {
-  const gap = " ".repeat(LETTER_GAP);
-  // Text 嵌套：颜色片段共用一个 Text 容器，间距空格不会被 flex layout 吃掉。
+  // 用 Box marginLeft 显式控制字母间距：yoga flex 不会"吃"空格，比 Text 拼空格稳。
   return (
-    <Text>
-      <Text color={COLORS.M}>{LETTERS.M[row]}</Text>
-      {gap}
-      <Text color={COLORS.U}>{LETTERS.U[row]}</Text>
-      {gap}
-      <Text color={COLORS.S}>{LETTERS.S[row]}</Text>
-      {gap}
-      <Text color={COLORS.E}>{LETTERS.E[row]}</Text>
-    </Text>
+    <Box flexDirection="row">
+      <Box>
+        <Text color={COLORS.M}>{LETTERS.M[row]}</Text>
+      </Box>
+      <Box marginLeft={LETTER_GAP}>
+        <Text color={COLORS.U}>{LETTERS.U[row]}</Text>
+      </Box>
+      <Box marginLeft={LETTER_GAP}>
+        <Text color={COLORS.S}>{LETTERS.S[row]}</Text>
+      </Box>
+      <Box marginLeft={LETTER_GAP}>
+        <Text color={COLORS.E}>{LETTERS.E[row]}</Text>
+      </Box>
+    </Box>
   );
 }
 
@@ -82,6 +86,7 @@ export function StartupBanner({ version, model, cwd }: StartupBannerProps) {
       <BannerLine row={3}>
         <Text color={COLORS.text}>cwd:   {cwd}</Text>
       </BannerLine>
+      <BannerLine row={4} />
     </Box>
   );
 }
