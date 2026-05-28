@@ -235,7 +235,7 @@ export function App({
         setAutocompleteIndex((i) => (i + 1) % len);
       } else if (key.tab) {
         const picked = autocomplete.matches[autocompleteIndex];
-        if (picked) commitInput(`/${picked.name} `);
+        if (picked) commitInput(`/${picked.name}`);
       } else if (key.escape) {
         commitInput("");
       }
@@ -316,7 +316,7 @@ export function App({
         );
         if (!exact) {
           const picked = autocomplete.matches[autocompleteIndex] ?? autocomplete.matches[0];
-          commitInput(`/${picked.name} `);
+          commitInput(`/${picked.name}`);
           return;
         }
       }
