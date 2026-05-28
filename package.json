@@ -1,22 +1,43 @@
 {
-  "name": "muse",
+  "name": "@qxbyte/muse",
   "version": "0.1.0",
   "description": "A Claude Code-style agent CLI, provider-agnostic, with first-class support for Chinese / self-hostable LLMs",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://github.com/qxbyte/muse#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qxbyte/muse.git"
+  },
+  "bugs": {
+    "url": "https://github.com/qxbyte/muse/issues"
+  },
+  "keywords": [
+    "agent",
+    "cli",
+    "llm",
+    "tui",
+    "ink",
+    "claude-code",
+    "deepseek",
+    "qwen",
+    "ollama",
+    "openai-compatible"
+  ],
   "bin": {
     "muse": "./dist/cli.js"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "README.md",
-    "CLAUDE.md"
+    "README.md"
   ],
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "dev": "tsup --watch",
@@ -25,7 +46,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "start": "node ./dist/cli.js",
-    "muse": "node ./dist/cli.js"
+    "muse": "node ./dist/cli.js",
+    "prepublishOnly": "npm run typecheck && npm run build"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^1.0.0",

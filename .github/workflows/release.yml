@@ -1,0 +1,59 @@
+name: Publish to npm
+
+# 在 GitHub UI 上点击 "Publish release" 时触发。
+# 流程：tag/version 校验 → typecheck → build → npm publish（含 provenance）。
+#
+# 配置一次性步骤（首次发布前）：
+#   1. npm.com → Access Tokens → Generate "Automation" token
+#   2. GitHub repo → Settings → Secrets and variables → Actions → New secret
+#      Name: NPM_TOKEN  Value: <粘贴 token>
+#   3. release 流程见 README §发布到 npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write   # 必需：npm provenance 走 OIDC
+
+jobs:
+  publish:
+    name: Build & publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify release tag matches package.json version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG=${GITHUB_REF_NAME#v}
+          echo "package.json version: $PKG_VERSION"
+          echo "release tag (stripped of v): $TAG"
+          if [ "$PKG_VERSION" != "$TAG" ]; then
+            echo "::error::Release tag '$TAG' does not match package.json version '$PKG_VERSION'."
+            echo "::error::Either bump package.json or recreate the release with the correct tag."
+            exit 1
+          fi
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
