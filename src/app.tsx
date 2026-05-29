@@ -9,7 +9,6 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
-import Spinner from "ink-spinner";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -22,6 +21,7 @@ import { SessionSelector, type SessionPickerRequest } from "./components/Session
 import { SlashAutocomplete } from "./components/SlashAutocomplete.js";
 import { PermissionModeBar } from "./components/PermissionModeBar.js";
 import { ProgressBanner, type ProgressState } from "./components/ProgressBanner.js";
+import { StatusLine } from "./components/StatusLine.js";
 import { DOT } from "./components/MessageView.js";
 import type { LLMClient } from "./llm/types.js";
 import { createLLMClient, createLLMClientFromModelEntry, setActiveModelEnv } from "./llm/client.js";
@@ -65,9 +65,16 @@ interface UIState {
   status: "idle" | "streaming" | "tool";
   /** 当前正在跑的工具名（onToolCallStart 设置；下一次 stream_delta 或 turn_end 清空）。 */
   runningTool: string | null;
+  /** session 累计 token（/cost 用），不是本轮快照——本轮快照走 turn* 引用 */
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** 本轮起点（user_submit 触发时 Date.now()），StatusLine 用；idle 时为 0 */
+  turnStartTime: number;
+  /** 本轮首次 text-delta 时间，StatusLine 显示 "thought for" 用；null 表示还未流出 text */
+  turnFirstTextTime: number | null;
+  /** 本轮已累计 input tokens（多轮 tool loop 累加） */
+  turnInputTokens: number;
 }
 
 type UIAction =
@@ -82,16 +89,26 @@ type UIAction =
 function reducer(state: UIState, action: UIAction): UIState {
   switch (action.type) {
     case "user_submit":
-      return { ...state, streamingText: "", status: "streaming", runningTool: null };
+      return {
+        ...state,
+        streamingText: "",
+        status: "streaming",
+        runningTool: null,
+        turnStartTime: Date.now(),
+        turnFirstTextTime: null,
+        turnInputTokens: 0,
+      };
     case "history_set":
       return { ...state, history: action.messages };
     case "stream_delta":
       // 文本流出意味着 LLM 在思考 / 回话——若刚才在 tool 阶段，自然过渡为 streaming
+      // 第一次流出时打 turnFirstTextTime 时间戳（"thought for" 用），冻结不再变
       return {
         ...state,
         streamingText: state.streamingText + action.delta,
         status: state.status === "tool" ? "streaming" : state.status,
         runningTool: null,
+        turnFirstTextTime: state.turnFirstTextTime ?? Date.now(),
       };
     case "stream_reset":
       return { ...state, streamingText: "" };
@@ -109,6 +126,7 @@ function reducer(state: UIState, action: UIAction): UIState {
         inputTokens: state.inputTokens + action.usage.inputTokens,
         outputTokens: state.outputTokens + action.usage.outputTokens,
         totalTokens: state.totalTokens + action.usage.totalTokens,
+        turnInputTokens: state.turnInputTokens + action.usage.inputTokens,
       };
   }
 }
@@ -145,6 +163,9 @@ export function App({
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
+    turnStartTime: 0,
+    turnFirstTextTime: null,
+    turnInputTokens: 0,
   });
 
   const messagesRef = useRef<Message[]>(initialMessages ?? []);
@@ -542,19 +563,14 @@ export function App({
           )}
         </Box>
       )}
-      {state.status === "tool" && state.runningTool && (
-        <Box flexDirection="row" marginTop={1}>
-          <Text color="yellow"><Spinner type="dots" /></Text>
-          <Text dimColor>{" Running "}</Text>
-          <Text color="yellow" bold>{state.runningTool}</Text>
-          <Text dimColor>{"..."}</Text>
-        </Box>
-      )}
-      {state.status === "streaming" && !state.streamingText && (
-        <Box flexDirection="row" marginTop={1}>
-          <Text color="cyan"><Spinner type="dots" /></Text>
-          <Text dimColor>{" Thinking..."}</Text>
-        </Box>
+      {state.status !== "idle" && (
+        <StatusLine
+          startTime={state.turnStartTime}
+          firstTextTime={state.turnFirstTextTime}
+          inputTokens={state.turnInputTokens}
+          runningTool={state.runningTool}
+          lang={lang}
+        />
       )}
       {progress && <ProgressBanner state={progress} />}
       <Box marginTop={1}>
