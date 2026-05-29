@@ -49,6 +49,17 @@ function flattenText(parts: ContentPart[]): string {
   return parts.filter((p): p is { type: "text"; text: string } => p.type === "text").map((p) => p.text).join("\n");
 }
 
+/**
+ * 行首圆点风格统一 ⏺，颜色按消息类型区分：
+ *   user        → cyan（输入指示符 "> " 保留，不混入圆点风格）
+ *   assistant   → cyan  ⏺  普通对话
+ *   tool_use    → yellow ⏺  工具调用
+ *   tool result → green ⏺  执行成功 / red ⏺ 错误
+ *
+ * 多行内容的换行点会自动对齐到圆点之后（外 Box row + 内 Box flexGrow 实现的自然缩进）。
+ */
+export const DOT = "⏺";
+
 function UserMessage({ content }: { content: string }) {
   return (
     <Box flexDirection="row" marginTop={1}>
@@ -76,14 +87,21 @@ function AssistantMessage({ content }: { content: ContentPart[] }) {
 
 function AssistantTextPart({ text }: { text: string }) {
   const rendered = useMemo(() => renderMarkdown(text), [text]);
-  return <Text>{rendered}</Text>;
+  return (
+    <Box flexDirection="row">
+      <Text color="cyan">{DOT} </Text>
+      <Box flexDirection="column" flexGrow={1}>
+        <Text>{rendered}</Text>
+      </Box>
+    </Box>
+  );
 }
 
 function ToolCallLine({ name, args }: { name: string; args: unknown }) {
   const argSummary = formatArgs(args);
   return (
     <Box flexDirection="row" marginTop={1}>
-      <Text color="yellow">{"→ "}</Text>
+      <Text color="yellow">{DOT} </Text>
       <Text color="yellow" bold>{name}</Text>
       <Text dimColor>({argSummary})</Text>
     </Box>
@@ -96,7 +114,7 @@ function ToolResultLine({ isError, content, diff }: { isError: boolean; content:
   return (
     <Box flexDirection="column" marginLeft={2}>
       <Box flexDirection="row">
-        <Text color={isError ? "red" : "green"}>{isError ? "✗ " : "✓ "}</Text>
+        <Text color={isError ? "red" : "green"}>{DOT} </Text>
         <Text dimColor>{oneLine}</Text>
       </Box>
       {diff && <DiffBlock diff={diff} />}

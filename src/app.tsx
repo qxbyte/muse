@@ -21,6 +21,7 @@ import { SessionSelector, type SessionPickerRequest } from "./components/Session
 import { SlashAutocomplete } from "./components/SlashAutocomplete.js";
 import { PermissionModeBar } from "./components/PermissionModeBar.js";
 import { ProgressBanner, type ProgressState } from "./components/ProgressBanner.js";
+import { DOT } from "./components/MessageView.js";
 import type { LLMClient } from "./llm/types.js";
 import { createLLMClient, createLLMClientFromModelEntry, setActiveModelEnv } from "./llm/client.js";
 import type { ToolRegistry } from "./tools/registry.js";
@@ -463,8 +464,11 @@ export function App({
           <MessageView key={i} message={msg} />
         ))}
         {state.streamingText && (
-          <Box marginTop={1}>
-            <Text>{state.streamingText}</Text>
+          <Box flexDirection="row" marginTop={1}>
+            <Text color="cyan">{DOT} </Text>
+            <Box flexDirection="column" flexGrow={1}>
+              <Text>{state.streamingText}</Text>
+            </Box>
           </Box>
         )}
       </Box>

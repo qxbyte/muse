@@ -32,7 +32,7 @@ export function SlashAutocomplete({ matches, index, maxVisible = DEFAULT_MAX }: 
   const end = Math.min(matches.length, start + maxVisible);
   const visible = matches.slice(start, end);
 
-  const nameWidth = Math.max(...matches.map((c) => c.name.length + (c.argsHint ? c.argsHint.length + 1 : 0)));
+  const nameWidth = Math.max(...matches.map((c) => c.name.length));
 
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -59,8 +59,7 @@ export function SlashAutocomplete({ matches, index, maxVisible = DEFAULT_MAX }: 
 }
 
 function Row({ cmd, focused, nameWidth }: { cmd: SlashCommand; focused: boolean; nameWidth: number }) {
-  const head = cmd.argsHint ? `${cmd.name} ${cmd.argsHint}` : cmd.name;
-  const padded = head.padEnd(nameWidth);
+  const padded = cmd.name.padEnd(nameWidth);
   // focused 整条命令名变紫色 + bold；非 focused 用默认色
   return (
     <Box flexDirection="row">
