@@ -38,6 +38,8 @@ export function MessageView({ message }: { message: Message }) {
           isError={message.isError ?? false}
           content={message.content}
           diff={message.diff}
+          summary={message.summary}
+          kind={message.kind}
         />
       );
     case "system":
@@ -50,13 +52,16 @@ function flattenText(parts: ContentPart[]): string {
 }
 
 /**
- * 行首圆点风格统一 ⏺，颜色按消息类型区分：
+ * 行首圆点风格统一 ⏺，颜色按消息类型区分（对齐 Claude Code）：
  *   user        → cyan（输入指示符 "> " 保留，不混入圆点风格）
- *   assistant   → cyan  ⏺  普通对话
- *   tool_use    → yellow ⏺  工具调用
- *   tool result → green ⏺  执行成功 / red ⏺ 错误
+ *   assistant   → cyan        ⏺  普通对话
+ *   tool_use    → yellow      ⏺  工具调用（一行参数 + 截断）
+ *   tool result → green       ⏺  执行成功
+ *                 red         ⏺  错误
+ *                 yellowBright⏺  warn（redirect/降级/部分成功）
  *
- * 多行内容的换行点会自动对齐到圆点之后（外 Box row + 内 Box flexGrow 实现的自然缩进）。
+ * Batch 分组：同一 assistant turn 内的多个 tool_use 直接堆叠（无 marginTop），
+ * 不同 turn 间靠 AssistantMessage 的 marginTop={1} 区隔。
  */
 export const DOT = "⏺";
 
@@ -99,23 +104,57 @@ function AssistantTextPart({ text }: { text: string }) {
 
 function ToolCallLine({ name, args }: { name: string; args: unknown }) {
   const argSummary = formatArgs(args);
+  // wrap="truncate-end" 让 args 在终端宽度内一行截断；外层 row 默认占满终端宽度。
   return (
-    <Box flexDirection="row" marginTop={1}>
+    <Box flexDirection="row">
       <Text color="yellow">{DOT} </Text>
       <Text color="yellow" bold>{name}</Text>
-      <Text dimColor>({argSummary})</Text>
+      <Box flexGrow={1} minWidth={0}>
+        <Text dimColor wrap="truncate-end">({argSummary})</Text>
+      </Box>
     </Box>
   );
 }
 
-function ToolResultLine({ isError, content, diff }: { isError: boolean; content: string; diff?: string }) {
-  const preview = content.length > 200 ? content.slice(0, 200) + "..." : content;
-  const oneLine = preview.split("\n")[0];
+function ToolResultLine({
+  isError,
+  content,
+  diff,
+  summary,
+  kind,
+}: {
+  isError: boolean;
+  content: string;
+  diff?: string;
+  summary?: string;
+  kind?: "success" | "error" | "warn";
+}) {
+  // 摘要来源优先级：tool 提供的 summary → content 第一行（最多 200 字符）
+  const fallback = (() => {
+    const preview = content.length > 200 ? content.slice(0, 200) + "…" : content;
+    return preview.split("\n")[0];
+  })();
+  const headLine = summary ?? fallback;
+
+  // 多行内容追加 "(+N lines)" 提示，告知用户实际内容更长
+  const totalLines = content.split("\n").length;
+  const extra = totalLines > 1 ? ` (+${totalLines - 1} lines)` : "";
+
+  // kind 显式优先；否则 isError → "error"；否则 "success"
+  const effective: "success" | "error" | "warn" = kind ?? (isError ? "error" : "success");
+  const dotColor =
+    effective === "error" ? "red" : effective === "warn" ? "yellowBright" : "green";
+
   return (
     <Box flexDirection="column" marginLeft={2}>
       <Box flexDirection="row">
-        <Text color={isError ? "red" : "green"}>{DOT} </Text>
-        <Text dimColor>{oneLine}</Text>
+        <Text color={dotColor}>{DOT} </Text>
+        <Box flexGrow={1} minWidth={0}>
+          <Text dimColor wrap="truncate-end">
+            {headLine}
+            {extra}
+          </Text>
+        </Box>
       </Box>
       {diff && <DiffBlock diff={diff} />}
     </Box>

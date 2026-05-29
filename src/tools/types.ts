@@ -28,6 +28,8 @@ export interface ToolExecuteResult {
   summary?: string;
   /** Unified diff（Write/Edit 等改文件工具填），交给 UI 渲染绿/红行；不进 LLM 上下文。 */
   diff?: string;
+  /** 状态点颜色（仅 UI）：success 绿 / error 红 / warn 黄。不填则由 isError 推断。 */
+  kind?: "success" | "error" | "warn";
 }
 
 export interface ToolDefinition<TArgs = unknown> {

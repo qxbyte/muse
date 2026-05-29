@@ -12,7 +12,7 @@ import TextInput from "ink-text-input";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { pickBanner } from "./components/StartupBanner.js";
 import { MessageView } from "./components/MessageView.js";
 import { PermissionPrompt, type PermissionRequest } from "./components/PermissionPrompt.js";
@@ -23,6 +23,7 @@ import { PermissionModeBar } from "./components/PermissionModeBar.js";
 import { ProgressBanner, type ProgressState } from "./components/ProgressBanner.js";
 import { StatusLine } from "./components/StatusLine.js";
 import { DOT } from "./components/MessageView.js";
+import { setTerminalTitle, resetTerminalTitle } from "./ui/termTitle.js";
 import type { LLMClient } from "./llm/types.js";
 import { createLLMClient, createLLMClientFromModelEntry, setActiveModelEnv } from "./llm/client.js";
 import type { ToolRegistry } from "./tools/registry.js";
@@ -221,6 +222,33 @@ export function App({
     const len = autocomplete?.matches.length ?? 0;
     if (autocompleteIndex >= len) setAutocompleteIndex(0);
   }, [autocomplete, autocompleteIndex]);
+
+  // 终端 tab/window 标题：idle 静态项目名，busy 时旋转 spinner + 工具名。
+  // 100ms tick / 10 帧 braille——切到别的窗口也能从 dock 看出 muse 还在跑。
+  useEffect(() => {
+    const project = basename(cwd) || "muse";
+    const baseIdle = `muse · ${project}`;
+
+    if (state.status === "idle") {
+      setTerminalTitle(baseIdle);
+      return;
+    }
+
+    const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let i = 0;
+    const id = setInterval(() => {
+      const frame = FRAMES[i % FRAMES.length];
+      const tail = state.runningTool ? ` · ${state.runningTool}` : "";
+      setTerminalTitle(`${frame} muse · ${project}${tail}`);
+      i++;
+    }, 100);
+    return () => clearInterval(id);
+  }, [state.status, state.runningTool, cwd]);
+
+  // 卸载时清标题（避免退出后 tab 留着旧 spinner 字符）
+  useEffect(() => {
+    return () => resetTerminalTitle();
+  }, []);
 
   const [memoryIndex, setMemoryIndex] = useState<string>("");
   useEffect(() => {
@@ -548,12 +576,14 @@ export function App({
         <Box flexDirection="column">
           <Box
             marginTop={1}
-            borderStyle="round"
+            borderStyle="single"
             borderColor="gray"
+            borderLeft={false}
+            borderRight={false}
             paddingX={1}
             flexDirection="row"
           >
-            <Text color="cyan">{"> "}</Text>
+            <Text dimColor>{"› "}</Text>
             <Box flexGrow={1}>
               <TextInput key={inputRemountKey} value={input} onChange={setInput} onSubmit={handleSubmit} />
             </Box>

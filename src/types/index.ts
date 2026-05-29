@@ -50,6 +50,10 @@ export interface ToolMessage {
   isError?: boolean;
   /** Unified diff for UI display only (Write/Edit). Not sent to LLM. */
   diff?: string;
+  /** UI-only one-line summary; if absent, UI falls back to content first line. */
+  summary?: string;
+  /** UI-only status dot color: success(green) / error(red) / warn(yellow). Default derived from isError. */
+  kind?: "success" | "error" | "warn";
 }
 
 export type Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage;

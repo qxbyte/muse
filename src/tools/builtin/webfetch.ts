@@ -92,13 +92,15 @@ export const WebFetchTool = defineTool({
             if (redirectURL.hostname !== target.hostname) {
               return {
                 content: `Redirect to a different host: ${redirectURL.toString()}\nRe-fetch the new URL explicitly if you trust it.`,
-                summary: `Redirect ${target.hostname} → ${redirectURL.hostname}`,
+                summary: `Redirect to a different host: ${redirectURL.toString()}`,
+                kind: "warn",
               };
             }
             // 同 host redirect 也提示一下，让 LLM 决定是否跟
             return {
               content: `Redirect (same host): ${redirectURL.toString()}\nRe-fetch the new URL to continue.`,
               summary: `Redirect → ${redirectURL.pathname}`,
+              kind: "warn",
             };
           } catch {
             return { content: `Redirect with unparseable location: ${loc}`, isError: true };
@@ -136,7 +138,9 @@ export const WebFetchTool = defineTool({
         processed = htmlToText(body);
       }
 
-      const summary = `Fetched ${target.hostname} (${total} bytes${total >= MAX_RESPONSE_BYTES ? ", truncated" : ""})`;
+      const summary = args.prompt
+        ? `# WebFetch result for: ${args.prompt}`
+        : `Fetched ${target.hostname} (${total} bytes${total >= MAX_RESPONSE_BYTES ? ", truncated" : ""})`;
       const truncated = processed.length > 200_000 ? processed.slice(0, 200_000) + "\n\n... [truncated]" : processed;
       const preface = args.prompt ? `# WebFetch result for: ${args.prompt}\n\nSource: ${target.toString()}\n\n` : `Source: ${target.toString()}\n\n`;
       return { content: preface + truncated, summary };

@@ -210,7 +210,7 @@ export class Agent {
     };
 
     const result = await this.ctx.tools.execute(call.name, call.args, toolCtx);
-    this.recordToolResult(call.id, call.name, result.content, result.isError ?? false, result.summary, result.diff);
+    this.recordToolResult(call.id, call.name, result.content, result.isError ?? false, result.summary, result.diff, result.kind);
   }
 
   private recordToolResult(
@@ -220,6 +220,7 @@ export class Agent {
     isError: boolean,
     summary?: string,
     diff?: string,
+    kind?: "success" | "error" | "warn",
   ): void {
     const toolMsg: Message = {
       role: "tool",
@@ -227,6 +228,8 @@ export class Agent {
       content,
       isError,
       ...(diff ? { diff } : {}),
+      ...(summary ? { summary } : {}),
+      ...(kind ? { kind } : {}),
     };
     this.messages.push(toolMsg);
     this.ctx.session.append({ type: "message", time: new Date().toISOString(), message: toolMsg });
