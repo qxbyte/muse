@@ -48,6 +48,8 @@ export interface ToolMessage {
   toolUseId: string;
   content: string;
   isError?: boolean;
+  /** Unified diff for UI display only (Write/Edit). Not sent to LLM. */
+  diff?: string;
 }
 
 export type Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage;

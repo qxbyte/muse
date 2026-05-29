@@ -4,6 +4,7 @@
  */
 
 import type { z } from "zod";
+import type { TodoStore } from "../loop/todos.js";
 
 export type PermissionLevel = "read" | "write" | "execute" | "network";
 
@@ -14,6 +15,8 @@ export interface ToolContext {
   askPermission: (toolName: string, args: unknown, summary: string) => Promise<boolean>;
   /** 主代理可能想在工具内部发起子任务，预留口子。 */
   invokeSubagent?: (prompt: string) => Promise<string>;
+  /** Session 内 todo 清单（TodoWrite 写入；system prompt 读取注入下一轮）。 */
+  todos?: TodoStore;
 }
 
 export interface ToolExecuteResult {
@@ -23,6 +26,8 @@ export interface ToolExecuteResult {
   isError?: boolean;
   /** 给 TUI 展示的摘要（一行）。 */
   summary?: string;
+  /** Unified diff（Write/Edit 等改文件工具填），交给 UI 渲染绿/红行；不进 LLM 上下文。 */
+  diff?: string;
 }
 
 export interface ToolDefinition<TArgs = unknown> {

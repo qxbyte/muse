@@ -13,10 +13,12 @@ export interface SystemPromptOpts {
   provider: string;
   lang?: "en" | "zh-CN";
   toolNames: string[];
+  /** MEMORY.md index 内容（loadMemoryIndex 加载后传入）；空串视为无 memory。 */
+  memoryIndex?: string;
 }
 
 export function buildSystemPrompt(opts: SystemPromptOpts): string {
-  const { cwd, model, provider, lang, toolNames } = opts;
+  const { cwd, model, provider, lang, toolNames, memoryIndex } = opts;
   const home = homedir();
   const displayCwd = cwd.startsWith(home) ? cwd.replace(home, "~") : cwd;
 
@@ -48,6 +50,17 @@ export function buildSystemPrompt(opts: SystemPromptOpts): string {
 
   if (lang === "zh-CN") {
     sections.push(`# Output language\nReply in Chinese (简体中文) unless the user writes in English.`);
+  }
+
+  if (memoryIndex && memoryIndex.trim()) {
+    sections.push(
+      `# Memory (long-term)\n` +
+        `Below is MEMORY.md — your index of persistent facts about the user, project, and prior feedback. ` +
+        `Each line points at a file you can MemoryRead. Use MemoryWrite to record new durable knowledge ` +
+        `(user role/preferences, validated decisions, project facts, external references). Do NOT save things ` +
+        `derivable from the repo or git history.\n\n` +
+        memoryIndex,
+    );
   }
 
   return sections.join("\n\n");

@@ -20,6 +20,9 @@ import type { PermissionLevel } from "../tools/types.js";
 
 export type Decision = "allow" | "ask" | "deny";
 
+/** 用户对 PermissionPrompt 三档选择。 */
+export type PermissionDecision = "yes" | "session_allow" | "no";
+
 export type PermissionMode = "default" | "acceptEdits" | "plan" | "bypassPermissions";
 
 export const MODE_CYCLE: readonly PermissionMode[] = [
@@ -53,6 +56,8 @@ export interface PermissionInput {
 export class PermissionGate {
   private rules: Required<Permissions>;
   private mode: PermissionMode = "default";
+  /** Session 级 allow：用户在 PermissionPrompt 选 "yes, for session" 后填充。 */
+  private sessionAllow = new Set<string>();
 
   constructor(rules: Permissions = {}) {
     this.rules = {
@@ -77,9 +82,20 @@ export class PermissionGate {
     return this.mode;
   }
 
+  /** 用户在 PermissionPrompt 选 "yes, allow for session" 时记下。 */
+  allowForSession(toolName: string): void {
+    this.sessionAllow.add(toolName);
+  }
+
+  isSessionAllowed(toolName: string): boolean {
+    return this.sessionAllow.has(toolName);
+  }
+
   decide(input: PermissionInput): Decision {
     // 用户显式 deny 永远生效，所有模式不可绕过
     if (this.matches(this.rules.deny, input)) return "deny";
+    // session 级 allow 在 deny 之后、mode 分支之前生效
+    if (this.sessionAllow.has(input.toolName)) return "allow";
 
     switch (this.mode) {
       case "bypassPermissions":
