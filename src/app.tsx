@@ -18,6 +18,7 @@ import { MessageView } from "./components/MessageView.js";
 import { PermissionPrompt, type PermissionRequest } from "./components/PermissionPrompt.js";
 import { ModelSelector, type ModelPickerRequest } from "./components/ModelSelector.js";
 import { SessionSelector, type SessionPickerRequest } from "./components/SessionSelector.js";
+import { QuestionPicker, type QuestionPickerRequest } from "./components/QuestionPicker.js";
 import { SlashAutocomplete } from "./components/SlashAutocomplete.js";
 import { PermissionModeBar } from "./components/PermissionModeBar.js";
 import { FooterStatus } from "./components/FooterStatus.js";
@@ -35,7 +36,7 @@ import { buildSystemPrompt } from "./loop/system-prompt.js";
 import { loadMemoryIndex } from "./loop/memory.js";
 import { loadSettings } from "./config/index.js";
 import { loadModelsRegistry, findEntry, type ModelEntry, type ModelsRegistry } from "./config/models.js";
-import type { Message, TokenUsage } from "./types/index.js";
+import type { Message, ToolMessage, TokenUsage } from "./types/index.js";
 import type { Settings } from "./config/types.js";
 import {
   BUILTIN_SLASH_COMMANDS,
@@ -182,9 +183,25 @@ export function App({
     setInput(value);
     setInputRemountKey((k) => k + 1);
   };
+  // 粘贴 registry：大段粘贴的原文按 id 存这里，输入框里只显示 [Pasted text #N +M lines]
+  // 占位符。提交 / 入队 dequeue 时再用 expandPastes 还原成原文发给 LLM。
+  // 用 ref 不用 state——内容只在 onPaste/onSubmit 的瞬时事件里读，不需要触发渲染。
+  const pasteRegistryRef = useRef<{ map: Map<number, string>; nextId: number }>({
+    map: new Map(),
+    nextId: 1,
+  });
+  const handlePaste = useCallback((chunk: string): string => {
+    const reg = pasteRegistryRef.current;
+    const id = reg.nextId++;
+    reg.map.set(id, chunk);
+    const lines = chunk.split("\n").length;
+    return `[Pasted text #${id} +${lines} lines]`;
+  }, []);
+
   const [pending, setPending] = useState<PermissionRequest | null>(null);
   const [picker, setPicker] = useState<ModelPickerRequest | null>(null);
   const [sessionPicker, setSessionPicker] = useState<SessionPickerRequest | null>(null);
+  const [questionPicker, setQuestionPicker] = useState<QuestionPickerRequest | null>(null);
   const [autocompleteIndex, setAutocompleteIndex] = useState(0);
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const agentRef = useRef<Agent | null>(null);
@@ -297,7 +314,22 @@ export function App({
       events: {
         onText: (delta) => dispatch({ type: "stream_delta", delta }),
         onToolCallStart: (_id, name) => dispatch({ type: "tool_start", name }),
-        onToolResult: () => dispatch({ type: "set_status", status: "streaming" }),
+        // assistant 流刚结束、这一批 calls 已落到 messages 但 tool 还没开始执行：
+        // 立刻同步 history，让所有 ⏺ Tool(...) 调用头一次性显示出来（之前要等第一个
+        // result 才能见到任何东西，看起来像"卡死了"）
+        onAssistantTurn: () => {
+          const msgs = [...agent.getMessages()];
+          messagesRef.current = msgs;
+          dispatch({ type: "history_set", messages: msgs });
+          dispatch({ type: "stream_reset" });
+        },
+        // 每个 tool result 到位就同步：result 立刻挂到对应 ⏺ 调用的 └ 树枝下方
+        onToolResult: () => {
+          const msgs = [...agent.getMessages()];
+          messagesRef.current = msgs;
+          dispatch({ type: "history_set", messages: msgs });
+          dispatch({ type: "set_status", status: "streaming" });
+        },
         onUsage: (usage: TokenUsage) => dispatch({ type: "add_usage", usage }),
         onTurnEnd: () => {
           const msgs = [...agent.getMessages()];
@@ -311,7 +343,9 @@ export function App({
           if (next) {
             setTimeout(() => {
               dispatch({ type: "user_submit" });
-              agent.runTurn(next).catch((err) => {
+              // 队列里存的是占位符版本；dequeue 时还原成原文
+              const expanded = expandPastes(next, pasteRegistryRef.current.map);
+              agent.runTurn(expanded).catch((err) => {
                 const m = err instanceof Error ? err.message : String(err);
                 dispatch({ type: "stream_delta", delta: `\n[error] ${m}\n` });
                 dispatch({ type: "set_status", status: "idle" });
@@ -326,6 +360,10 @@ export function App({
         onPermissionRequest: (toolName, args, summary) =>
           new Promise<PermissionDecision>((resolve) => {
             setPending({ toolName, args, summary, resolve });
+          }),
+        onAskQuestions: (questions) =>
+          new Promise((resolve) => {
+            setQuestionPicker({ questions, resolve });
           }),
       },
     });
@@ -379,11 +417,14 @@ export function App({
     },
     // 模型在跑时也要响应键盘（让用户能 Ctrl+C / Shift+Tab / autocomplete 导航）；
     // 仅模态弹起时让出键盘所有权
-    { isActive: !pending && !picker && !sessionPicker },
+    { isActive: !pending && !picker && !sessionPicker && !questionPicker },
   );
 
-  // 输入框：模态弹起时让出，否则始终显示——模型在跑时也能输入，提交进入队列
-  const acceptingInput = pending === null && picker === null && sessionPicker === null;
+  // 输入框：picker 类模态弹起时仍保持可见但失焦（"Chat about this" 风格），
+  // 真正抢键盘的 PermissionPrompt / ModelSelector / SessionSelector 才完全隐藏
+  const acceptingInput = pending === null && picker === null && sessionPicker === null && questionPicker === null;
+  const inputVisible = pending === null && picker === null && sessionPicker === null;
+  const inputPlaceholder = questionPicker ? "Chat about this" : undefined;
 
   const actions: SlashActions = useMemo(
     () => ({
@@ -532,8 +573,18 @@ export function App({
       }
 
       dispatch({ type: "user_submit" });
+      // 立刻把用户消息塞进可见历史，UX 上"瞬间出现"——别等 Agent runTurn 结束才 history_set
+      // Agent 内部也会 push 同样的 message，turn 结束时 onTurnEnd 用 agent.getMessages()
+      // 同步回来一次就行，不会重复
+      const expanded = expandPastes(trimmed, pasteRegistryRef.current.map);
+      {
+        const userMsg: Message = { role: "user", content: expanded };
+        const next = [...messagesRef.current, userMsg];
+        messagesRef.current = next;
+        dispatch({ type: "history_set", messages: next });
+      }
       try {
-        await agentRef.current?.runTurn(trimmed);
+        await agentRef.current?.runTurn(expanded);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         dispatch({ type: "stream_delta", delta: `\n[error] ${msg}\n` });
@@ -567,13 +618,30 @@ export function App({
     ? null
     : pickBanner(termWidth, { version: "0.1.0", model: llm.model, cwd: shortCwd(cwd) });
 
+  // 配对 tool_use ↔ tool_result：AssistantMessage 把 result 内联渲染在 call 下方（树形）；
+  // 顶层 history loop 跳过已被内联的 ToolMessage 避免重复
+  const { resultsByCallId, inlinedIds } = useMemo(() => {
+    const byId = new Map<string, ToolMessage>();
+    const used = new Set<string>();
+    for (const m of state.history) {
+      if (m.role === "tool" && m.toolUseId) byId.set(m.toolUseId, m);
+      if (m.role === "assistant" && Array.isArray(m.content)) {
+        for (const p of m.content) {
+          if (p.type === "tool_use") used.add(p.id);
+        }
+      }
+    }
+    return { resultsByCallId: byId, inlinedIds: used };
+  }, [state.history]);
+
   return (
     <Box flexDirection="column">
       {banner}
       <Box flexDirection="column" marginTop={1}>
-        {state.history.map((msg, i) => (
-          <MessageView key={i} message={msg} />
-        ))}
+        {state.history.map((msg, i) => {
+          if (msg.role === "tool" && inlinedIds.has(msg.toolUseId)) return null;
+          return <MessageView key={i} message={msg} resultsByCallId={resultsByCallId} />;
+        })}
         {state.streamingText && (
           <Box flexDirection="row" marginTop={1}>
             <Text color="cyan">{DOT} </Text>
@@ -616,6 +684,17 @@ export function App({
           }}
         />
       )}
+      {questionPicker && (
+        <QuestionPicker
+          request={{
+            questions: questionPicker.questions,
+            resolve: (responses) => {
+              questionPicker.resolve(responses);
+              setQuestionPicker(null);
+            },
+          }}
+        />
+      )}
       {state.status !== "idle" && (
         <StatusLine
           startTime={state.turnStartTime}
@@ -626,7 +705,7 @@ export function App({
         />
       )}
       {progress && <ProgressBanner state={progress} />}
-      {acceptingInput && (
+      {inputVisible && (
         <Box flexDirection="column">
           {queuedInputs.length > 0 && (
             <Box flexDirection="column" marginLeft={2} marginTop={1}>
@@ -644,7 +723,7 @@ export function App({
             </Text>
             <Box flexDirection="row">
               <Text backgroundColor="#1c1c1c" color="gray" bold>
-                {" ❯ "}
+                {" › "}
               </Text>
               <BgTextInput
                 key={inputRemountKey}
@@ -654,6 +733,8 @@ export function App({
                 width={Math.max(10, termWidth - 4)}
                 backgroundColor="#1c1c1c"
                 isActive={acceptingInput}
+                onPaste={handlePaste}
+                placeholder={inputPlaceholder}
               />
             </Box>
             <Text backgroundColor="#1c1c1c">
@@ -697,6 +778,16 @@ function extractUserInputs(messages: Message[]): string[] {
     if (text.trim()) out.push(text);
   }
   return out;
+}
+
+// 占位符格式：[Pasted text #<id> +<lines> lines]——与 Claude Code 对齐
+const PASTE_PLACEHOLDER_RE = /\[Pasted text #(\d+) \+\d+ lines\]/g;
+
+function expandPastes(value: string, map: Map<number, string>): string {
+  return value.replace(PASTE_PLACEHOLDER_RE, (full, id) => {
+    const text = map.get(Number(id));
+    return text ?? full;
+  });
 }
 
 function shortCwd(cwd: string): string {

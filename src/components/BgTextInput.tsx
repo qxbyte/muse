@@ -29,9 +29,38 @@ export interface BgTextInputProps {
   color?: string;
   /** 是否启用键盘（弹模态时调用方传 false 让出键盘所有权）。 */
   isActive?: boolean;
+  /**
+   * 检测到一段疑似粘贴（含换行 或 > 200 字符）时回调；返回的字符串作为实际插入内容
+   * 替换原始 chunk。调用方一般注册原文到 paste registry，返回 `[Pasted text #N ...]`
+   * 占位符，避免 \n 进入输入框造成多行渲染。
+   */
+  onPaste?: (chunk: string) => string;
+  /**
+   * value 为空时显示的暗淡占位文本——典型场景：弹模态时 isActive=false，
+   * 输入框仍可见但失焦，用 placeholder 透出 "Chat about this" 之类的提示。
+   */
+  placeholder?: string;
 }
 
 const BLINK_MS = 530; // 标准终端 cursor 闪烁周期
+const PASTE_CHAR_THRESHOLD = 200;
+
+function looksLikePaste(input: string): boolean {
+  // \r 也算：macOS Terminal / iTerm 粘贴多段文本时换行常为 \r 而非 \n，
+  // 落进 value 后 \r 会被终端解释为回车（光标回行首）→ 后文覆盖前文，看着像"丢消息"
+  return input.includes("\n") || input.includes("\r") || input.length > PASTE_CHAR_THRESHOLD;
+}
+
+// bracketed paste 转义：部分终端把粘贴包成 \x1b[200~...\x1b[201~，Ink 不一定剥
+function stripBracketedPaste(s: string): string {
+  return s.replace(/\x1b\[20[01]~/g, "");
+}
+
+// 统一换行：\r\n → \n、裸 \r → \n
+// 用途：粘贴 chunk 在注册到 registry 前先规范化，避免 \r 流进 value / 历史 / LLM
+function normalizeLineEndings(s: string): string {
+  return s.replace(/\r\n?/g, "\n");
+}
 
 export function BgTextInput({
   value,
@@ -41,6 +70,8 @@ export function BgTextInput({
   backgroundColor,
   color,
   isActive = true,
+  onPaste,
+  placeholder,
 }: BgTextInputProps) {
   const [cursor, setCursor] = useState(value.length);
   const [blinkOn, setBlinkOn] = useState(true);
@@ -94,22 +125,61 @@ export function BgTextInput({
       }
       // 普通字符（含粘贴）：在光标处插入
       if (input && !key.return) {
-        const next = value.slice(0, cursor) + input + value.slice(cursor);
+        // 先剥 bracketed paste 转义，再统一换行符——\r 不处理会让后续渲染 / LLM 都吃坏
+        const cleaned = normalizeLineEndings(stripBracketedPaste(input));
+        if (!cleaned) return;
+        // 检测疑似粘贴：交给调用方决定要不要替换成占位符
+        // 避免 \n 直接进 value 让 Text 渲染成多行，把输入框撑到看不见前文
+        const insertion =
+          onPaste && looksLikePaste(cleaned) ? onPaste(cleaned) : cleaned;
+        const next = value.slice(0, cursor) + insertion + value.slice(cursor);
         onChange(next);
-        setCursor((c) => c + input.length);
+        setCursor((c) => c + insertion.length);
       }
     },
     { isActive },
   );
 
-  // 视口计算：保证整行可视宽度 == width，光标永远可见
-  const view = computeViewport(value, cursor, width);
-  const at = view.atChar;
-  const padLen = Math.max(0, width - view.consumedWidth);
-
   // 光标渲染：active + blinkOn 时 inverse 高亮；blinkOff 或 inactive 时
   // 保持背景色不显光标，单元格宽度不变（避免布局抖动）
   const showCursor = isActive && blinkOn;
+
+  // 空 value + 有 placeholder → 占位文本模式（暗淡显示，"Chat about this" 风格）
+  if (value.length === 0 && placeholder) {
+    // 留 1 列给光标位
+    const maxW = Math.max(0, width - 1);
+    let truncated = placeholder;
+    while (stringWidth(truncated) > maxW && truncated.length > 0) {
+      truncated = truncated.slice(0, -1);
+    }
+    const usedW = 1 + stringWidth(truncated);
+    const padLen = Math.max(0, width - usedW);
+    return (
+      <Text backgroundColor={backgroundColor} color={color}>
+        {showCursor ? (
+          <Text backgroundColor="blue" color={color} dimColor>
+            {" "}
+          </Text>
+        ) : (
+          <Text backgroundColor={backgroundColor} color={color}>
+            {" "}
+          </Text>
+        )}
+        <Text backgroundColor={backgroundColor} dimColor>
+          {truncated}
+        </Text>
+        {" ".repeat(padLen)}
+      </Text>
+    );
+  }
+
+  // 视口计算：保证整行可视宽度 == width，光标永远可见
+  // 显示前把 \n / \r 换成 ↵（1 列宽可视符），避免 Ink Text 渲染成真换行 / 回车——
+  // 换行会把输入框撑成多行；回车更糟，会让后文覆盖前文看着像"消息丢了"
+  const displayValue = value.replace(/[\n\r]/g, "↵");
+  const view = computeViewport(displayValue, cursor, width);
+  const at = view.atChar;
+  const padLen = Math.max(0, width - view.consumedWidth);
 
   return (
     <Text backgroundColor={backgroundColor} color={color}>
@@ -155,7 +225,7 @@ function charWidth(ch: string): number {
   return 1;
 }
 
-function stringWidth(s: string): number {
+export function stringWidth(s: string): number {
   let w = 0;
   for (const ch of s) w += charWidth(ch);
   return w;
