@@ -33,7 +33,13 @@ export function MessageView({ message }: { message: Message }) {
     case "assistant":
       return <AssistantMessage content={message.content} />;
     case "tool":
-      return <ToolResultLine isError={message.isError ?? false} content={message.content} />;
+      return (
+        <ToolResultLine
+          isError={message.isError ?? false}
+          content={message.content}
+          diff={message.diff}
+        />
+      );
     case "system":
       return null;
   }
@@ -84,13 +90,44 @@ function ToolCallLine({ name, args }: { name: string; args: unknown }) {
   );
 }
 
-function ToolResultLine({ isError, content }: { isError: boolean; content: string }) {
+function ToolResultLine({ isError, content, diff }: { isError: boolean; content: string; diff?: string }) {
   const preview = content.length > 200 ? content.slice(0, 200) + "..." : content;
   const oneLine = preview.split("\n")[0];
   return (
-    <Box flexDirection="row" marginLeft={2}>
-      <Text color={isError ? "red" : "green"}>{isError ? "✗ " : "✓ "}</Text>
-      <Text dimColor>{oneLine}</Text>
+    <Box flexDirection="column" marginLeft={2}>
+      <Box flexDirection="row">
+        <Text color={isError ? "red" : "green"}>{isError ? "✗ " : "✓ "}</Text>
+        <Text dimColor>{oneLine}</Text>
+      </Box>
+      {diff && <DiffBlock diff={diff} />}
+    </Box>
+  );
+}
+
+function DiffBlock({ diff }: { diff: string }) {
+  // jsdiff createPatch 头四行：Index / === / --- / +++；省略，只渲染 hunks
+  const lines = diff.split("\n");
+  const start = lines.findIndex((l) => l.startsWith("@@"));
+  const rendered = start >= 0 ? lines.slice(start) : lines;
+  return (
+    <Box flexDirection="column" marginLeft={2} marginTop={1}>
+      {rendered.map((line, i) => {
+        let color: string | undefined;
+        let dim = false;
+        if (line.startsWith("+")) color = "green";
+        else if (line.startsWith("-")) color = "red";
+        else if (line.startsWith("@@")) {
+          color = "cyan";
+          dim = true;
+        } else {
+          dim = true;
+        }
+        return (
+          <Text key={i} color={color} dimColor={dim}>
+            {line || " "}
+          </Text>
+        );
+      })}
     </Box>
   );
 }

@@ -8,6 +8,7 @@ import { resolve, isAbsolute } from "node:path";
 import { z } from "zod";
 import { defineTool } from "../types.js";
 import { ToolError } from "../../types/index.js";
+import { checkSensitivePath } from "../_sensitive.js";
 
 const ReadArgs = z.object({
   file_path: z.string().describe("Absolute or cwd-relative path to the file."),
@@ -26,6 +27,11 @@ export const ReadTool = defineTool({
   summarize: (args) => `Read(${args.file_path}${args.offset != null ? `, offset=${args.offset}` : ""}${args.limit != null ? `, limit=${args.limit}` : ""})`,
   async execute(args, ctx) {
     const path = isAbsolute(args.file_path) ? args.file_path : resolve(ctx.cwd, args.file_path);
+
+    const sensitive = checkSensitivePath(path);
+    if (sensitive.blocked) {
+      return { content: `Refused: ${path} matches sensitive path policy (${sensitive.reason}).`, isError: true };
+    }
 
     let info;
     try {

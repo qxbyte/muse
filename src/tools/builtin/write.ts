@@ -5,10 +5,12 @@
  * 这个约束实际由 LLM 遵守 (prompt 引导)；本工具不强制，但记录到日志。
  */
 
-import { writeFile, mkdir, stat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { resolve, isAbsolute, dirname } from "node:path";
 import { z } from "zod";
 import { defineTool } from "../types.js";
+import { makeUnifiedDiff } from "../_diff.js";
+import { checkSensitivePath } from "../_sensitive.js";
 
 const WriteArgs = z.object({
   file_path: z.string().describe("Absolute or cwd-relative path to the file."),
@@ -24,10 +26,17 @@ export const WriteTool = defineTool({
   async execute(args, ctx) {
     const path = isAbsolute(args.file_path) ? args.file_path : resolve(ctx.cwd, args.file_path);
 
+    const sensitive = checkSensitivePath(path);
+    if (sensitive.blocked) {
+      return { content: `Refused: ${path} matches sensitive path policy (${sensitive.reason}).`, isError: true };
+    }
+
     let existed = false;
+    let oldContent = "";
     try {
       const info = await stat(path);
       existed = info.isFile();
+      if (existed) oldContent = await readFile(path, "utf-8");
     } catch {
       // 文件不存在，正常情况
     }
@@ -35,11 +44,14 @@ export const WriteTool = defineTool({
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, args.content, "utf-8");
 
+    const diff = makeUnifiedDiff(args.file_path, oldContent, args.content);
+
     return {
       content: existed
         ? `Overwrote ${path} (${args.content.length} bytes).`
         : `Created ${path} (${args.content.length} bytes).`,
       summary: `${existed ? "Overwrote" : "Created"} ${args.file_path}`,
+      diff: diff || undefined,
     };
   },
 });

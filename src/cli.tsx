@@ -15,6 +15,7 @@ import { PermissionGate } from "./permission/index.js";
 import { Session } from "./session/jsonl.js";
 import { Agent } from "./loop/agent.js";
 import { buildSystemPrompt } from "./loop/system-prompt.js";
+import { loadMemoryIndex } from "./loop/memory.js";
 import { MuseError } from "./types/index.js";
 import { log } from "./log/index.js";
 
@@ -35,6 +36,7 @@ async function main() {
     .option("--no-banner", "skip startup banner")
     .option("--quiet", "minimal output (implies --no-banner)")
     .option("--continue", "resume last session in this directory")
+    .option("--mode <mode>", "initial permission mode (default|acceptEdits|plan|bypassPermissions)")
     .option("--debug", "verbose logging")
     .action(async (promptArgs: string[], opts: CliOptions) => {
       if (opts.debug) log.setLevel("debug");
@@ -77,14 +79,46 @@ async function main() {
       tools.registerAll(BUILTIN_TOOLS);
 
       const permissions = new PermissionGate(settings.permissions);
-      const session = await Session.create(cwd);
-      await session.append({
-        type: "session_start",
-        time: new Date().toISOString(),
-        cwd,
-        provider: llmProviderName,
-        model: llmModelName,
-      });
+
+      // --mode 启动期指定 PermissionMode；后续 Shift+Tab / /mode 仍可切换
+      if (opts.mode) {
+        const valid = ["default", "acceptEdits", "plan", "bypassPermissions"] as const;
+        if (!(valid as readonly string[]).includes(opts.mode)) {
+          die(`Invalid --mode "${opts.mode}". Valid: ${valid.join(", ")}`);
+        }
+        permissions.setMode(opts.mode as (typeof valid)[number]);
+      }
+
+      // --continue: 复用最近一次 session 的 jsonl + messages
+      let session: Session;
+      let initialMessages: import("./types/index.js").Message[] | undefined;
+      if (opts.continue) {
+        const latest = await Session.findLatest(cwd);
+        if (latest) {
+          const opened = await Session.open(latest);
+          session = opened.session;
+          initialMessages = Session.messagesFromEvents(opened.events);
+          log.debug("resumed session", { id: latest.id, messages: initialMessages.length });
+        } else {
+          session = await Session.create(cwd);
+          await session.append({
+            type: "session_start",
+            time: new Date().toISOString(),
+            cwd,
+            provider: llmProviderName,
+            model: llmModelName,
+          });
+        }
+      } else {
+        session = await Session.create(cwd);
+        await session.append({
+          type: "session_start",
+          time: new Date().toISOString(),
+          cwd,
+          provider: llmProviderName,
+          model: llmModelName,
+        });
+      }
 
       const showBanner = !opts.quiet && opts.banner !== false;
       const lang = settings.ui?.lang ?? "en";
@@ -94,7 +128,17 @@ async function main() {
       const oneShotPrompt = [...(promptArgs ?? []), pipedInput].filter(Boolean).join("\n").trim();
 
       if (oneShotPrompt) {
-        await runOneShot({ llm, tools, permissions, session, cwd, lang, prompt: oneShotPrompt, quiet: opts.quiet ?? false });
+        await runOneShot({
+          llm,
+          tools,
+          permissions,
+          session,
+          cwd,
+          lang,
+          prompt: oneShotPrompt,
+          quiet: opts.quiet ?? false,
+          initialMessages,
+        });
         return;
       }
 
@@ -112,6 +156,7 @@ async function main() {
           cwd={cwd}
           lang={lang}
           showBanner={showBanner}
+          initialMessages={initialMessages}
         />,
       );
       await waitUntilExit();
@@ -126,6 +171,7 @@ interface CliOptions {
   banner?: boolean;
   quiet?: boolean;
   continue?: boolean;
+  mode?: string;
   debug?: boolean;
 }
 
@@ -145,13 +191,16 @@ async function runOneShot(opts: {
   lang: "en" | "zh-CN";
   prompt: string;
   quiet: boolean;
+  initialMessages?: import("./types/index.js").Message[];
 }): Promise<void> {
+  const memoryIndex = await loadMemoryIndex(opts.cwd);
   const systemPrompt = buildSystemPrompt({
     cwd: opts.cwd,
     model: opts.llm.model,
     provider: opts.llm.providerName,
     lang: opts.lang,
     toolNames: opts.tools.list().map((t) => t.name),
+    memoryIndex,
   });
   const agent = new Agent({
     llm: opts.llm,
@@ -169,10 +218,11 @@ async function runOneShot(opts: {
       onPermissionRequest: async (toolName, _args, summary) => {
         // 非交互模式：deny 所有需要 ask 的工具
         if (!opts.quiet) process.stderr.write(`\n[denied: ${toolName} — ${summary}; run in interactive mode to approve]\n`);
-        return false;
+        return "no";
       },
     },
   });
+  if (opts.initialMessages?.length) agent.setMessages(opts.initialMessages);
   await agent.runTurn(opts.prompt);
   process.stdout.write("\n");
 }

@@ -10,6 +10,8 @@ import { resolve, isAbsolute } from "node:path";
 import { z } from "zod";
 import { defineTool } from "../types.js";
 import { ToolError } from "../../types/index.js";
+import { makeUnifiedDiff } from "../_diff.js";
+import { checkSensitivePath } from "../_sensitive.js";
 
 const EditArgs = z.object({
   file_path: z.string().describe("Absolute or cwd-relative path to the file."),
@@ -26,6 +28,11 @@ export const EditTool = defineTool({
   summarize: (args) => `Edit(${args.file_path})`,
   async execute(args, ctx) {
     const path = isAbsolute(args.file_path) ? args.file_path : resolve(ctx.cwd, args.file_path);
+
+    const sensitive = checkSensitivePath(path);
+    if (sensitive.blocked) {
+      return { content: `Refused: ${path} matches sensitive path policy (${sensitive.reason}).`, isError: true };
+    }
 
     let content: string;
     try {
@@ -58,9 +65,12 @@ export const EditTool = defineTool({
 
     await writeFile(path, newContent, "utf-8");
 
+    const diff = makeUnifiedDiff(args.file_path, content, newContent);
+
     return {
       content: `Edited ${path}: replaced ${args.replace_all ? occurrences : 1} occurrence(s).`,
       summary: `Edited ${args.file_path}`,
+      diff: diff || undefined,
     };
   },
 });

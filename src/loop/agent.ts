@@ -15,8 +15,9 @@ import type { LLMClient, LLMEvent } from "../llm/types.js";
 import type { Message, AssistantMessage, ContentPart, ToolUsePart, TokenUsage } from "../types/index.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { ToolContext } from "../tools/types.js";
-import type { PermissionGate, Decision } from "../permission/index.js";
+import type { PermissionGate, Decision, PermissionDecision } from "../permission/index.js";
 import type { Session } from "../session/jsonl.js";
+import { TodoStore } from "./todos.js";
 import { log } from "../log/index.js";
 
 export interface AgentEvents {
@@ -24,7 +25,7 @@ export interface AgentEvents {
   onToolCallStart?: (id: string, name: string) => void;
   onToolCallArgs?: (id: string, args: unknown) => void;
   onToolResult?: (id: string, name: string, content: string, isError: boolean, summary?: string) => void;
-  onPermissionRequest?: (toolName: string, args: unknown, summary: string) => Promise<boolean>;
+  onPermissionRequest?: (toolName: string, args: unknown, summary: string) => Promise<PermissionDecision>;
   onUsage?: (usage: TokenUsage) => void;
   onError?: (error: Error) => void;
   onTurnEnd?: () => void;
@@ -43,6 +44,7 @@ export interface AgentContext {
 
 export class Agent {
   private messages: Message[] = [];
+  readonly todos = new TodoStore();
 
   constructor(private ctx: AgentContext) {}
 
@@ -66,10 +68,15 @@ export class Agent {
       const tools = this.ctx.tools.toLLMDefinitions(
         mode === "plan" ? (t) => t.permission === "read" : undefined,
       );
+      // 每轮把当前 todos 注入 system prompt 末尾，让 LLM 看到自己写的清单
+      const todoSection = this.todos.toPromptSection();
+      const systemPrompt = todoSection
+        ? `${this.ctx.systemPrompt}\n\n${todoSection}`
+        : this.ctx.systemPrompt;
       const stream = this.ctx.llm.stream({
         messages: this.messages,
         tools,
-        systemPrompt: this.ctx.systemPrompt,
+        systemPrompt,
         abortSignal: this.ctx.abortSignal,
       });
 
@@ -183,29 +190,43 @@ export class Agent {
       return;
     }
     if (decision === "ask") {
-      approved = (await this.ctx.events?.onPermissionRequest?.(call.name, call.args, summary)) ?? false;
-      if (!approved) {
+      const userDecision =
+        (await this.ctx.events?.onPermissionRequest?.(call.name, call.args, summary)) ?? "no";
+      if (userDecision === "no") {
         this.recordToolResult(call.id, call.name, `User rejected ${call.name}.`, true);
         return;
       }
+      if (userDecision === "session_allow") {
+        this.ctx.permissions.allowForSession(call.name);
+      }
+      approved = true;
     }
 
     const toolCtx: ToolContext = {
       cwd: this.ctx.cwd,
       abortSignal: this.ctx.abortSignal,
       askPermission: async () => true, // 已在外层处理
+      todos: this.todos,
     };
 
     const result = await this.ctx.tools.execute(call.name, call.args, toolCtx);
-    this.recordToolResult(call.id, call.name, result.content, result.isError ?? false, result.summary);
+    this.recordToolResult(call.id, call.name, result.content, result.isError ?? false, result.summary, result.diff);
   }
 
-  private recordToolResult(id: string, name: string, content: string, isError: boolean, summary?: string): void {
+  private recordToolResult(
+    id: string,
+    name: string,
+    content: string,
+    isError: boolean,
+    summary?: string,
+    diff?: string,
+  ): void {
     const toolMsg: Message = {
       role: "tool",
       toolUseId: id,
       content,
       isError,
+      ...(diff ? { diff } : {}),
     };
     this.messages.push(toolMsg);
     this.ctx.session.append({ type: "message", time: new Date().toISOString(), message: toolMsg });
