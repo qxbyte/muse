@@ -639,11 +639,11 @@ export function App({
             </Box>
           )}
           <Box marginTop={1} flexDirection="column">
-            <Text backgroundColor="#262626">
+            <Text backgroundColor="#1c1c1c">
               {" ".repeat(Math.max(1, termWidth - 1))}
             </Text>
             <Box flexDirection="row">
-              <Text backgroundColor="#262626" color="gray" bold>
+              <Text backgroundColor="#1c1c1c" color="gray" bold>
                 {" ❯ "}
               </Text>
               <BgTextInput
@@ -652,11 +652,11 @@ export function App({
                 onChange={setInput}
                 onSubmit={handleSubmit}
                 width={Math.max(10, termWidth - 4)}
-                backgroundColor="#262626"
+                backgroundColor="#1c1c1c"
                 isActive={acceptingInput}
               />
             </Box>
-            <Text backgroundColor="#262626">
+            <Text backgroundColor="#1c1c1c">
               {" ".repeat(Math.max(1, termWidth - 1))}
             </Text>
           </Box>
