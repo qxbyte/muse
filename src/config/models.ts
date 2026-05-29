@@ -154,6 +154,9 @@ function mergeRegistries(low: ModelsRegistry | undefined, high: ModelsRegistry):
 /**
  * 输入归一：url ↔ baseUrl 二选一；剥 trailing `/` 与 `/chat/completions`。
  * 经过校验后 baseUrl/url 至少一个非空（zod refine 保证），输出 baseUrl 必填。
+ *
+ * 同时记录 apiKey 字段里出现的 ${ENV_VAR} 占位符名（_apiKeyEnvVars），让 expand 后
+ * apiKey 变空时 client.ts 能给出"缺哪个 env var"的精确提示。
  */
 function normalizeModelEntry(entry: ModelEntryInput): ModelEntry {
   let baseUrl = (entry.baseUrl ?? entry.url ?? "").replace(/\/+$/, "");
@@ -161,7 +164,21 @@ function normalizeModelEntry(entry: ModelEntryInput): ModelEntry {
     baseUrl = baseUrl.slice(0, -"/chat/completions".length);
   }
   const { url: _url, ...rest } = entry;
-  return { ...rest, baseUrl };
+  const apiKeyEnvVars = entry.apiKey ? extractEnvVars(entry.apiKey) : [];
+  return {
+    ...rest,
+    baseUrl,
+    ...(apiKeyEnvVars.length > 0 ? { _apiKeyEnvVars: apiKeyEnvVars } : {}),
+  };
+}
+
+const ENV_PLACEHOLDER = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
+function extractEnvVars(s: string): string[] {
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  ENV_PLACEHOLDER.lastIndex = 0;
+  while ((m = ENV_PLACEHOLDER.exec(s)) !== null) out.push(m[1]);
+  return out;
 }
 
 // ---------- selector / lookup helpers ----------

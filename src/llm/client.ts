@@ -45,11 +45,7 @@ export function setActiveModelEnv(entry: ModelEntry): void {
 export function createLLMClientFromModelEntry(entry: ModelEntry): LLMClient {
   const apiKey = process.env[ACTIVE_API_KEY_ENV] ?? "";
   if (!apiKey && !entry.baseUrl.includes("localhost")) {
-    throw new MuseError(
-      `Model "${entry.id}" has no apiKey in env ${ACTIVE_API_KEY_ENV}. ` +
-        `Check models.json (or models.local.json) and ensure setActiveModelEnv() was called.`,
-      "MISSING_API_KEY",
-    );
+    throw new MuseError(buildMissingKeyMessage(entry), "MISSING_API_KEY");
   }
   const capabilities: Partial<ModelCapabilities> = {};
   if (entry.supportsToolCall !== undefined) capabilities.toolCalling = entry.supportsToolCall;
@@ -63,6 +59,44 @@ export function createLLMClientFromModelEntry(entry: ModelEntry): LLMClient {
     model: entry.id,
     capabilities,
   });
+}
+
+/**
+ * 用户向报错：当 apiKey 是 ${VAR} 占位符但 VAR 没设时，告诉用户具体缺哪个 env var
+ * 和三种修复方式；不是占位符 / 直接缺字段时退化为通用提示。
+ */
+function buildMissingKeyMessage(entry: ModelEntry): string {
+  const envVars = ((entry as { _apiKeyEnvVars?: string[] })._apiKeyEnvVars ?? []).filter(
+    (v) => !process.env[v],
+  );
+  const head = `Model "${entry.id}" needs an API key but none was found.`;
+
+  if (envVars.length > 0) {
+    const list = envVars.map((v) => `$${v}`).join(", ");
+    const fixVar = envVars[0];
+    return [
+      head,
+      ``,
+      `Cause: ~/.muse/models.json sets apiKey to a placeholder referencing ${list},`,
+      `       but the shell environment does not have ${envVars.length > 1 ? "those variables" : "that variable"} set.`,
+      ``,
+      `Fix (pick one):`,
+      `  1. Export the variable in your shell:`,
+      `       export ${fixVar}=<your-key>`,
+      `  2. Put the key directly in ~/.muse/models.local.json (gitignored, only-this-machine):`,
+      `       {`,
+      `         "models": [ { "id": "${entry.id}", "apiKey": "<your-key>" } ]`,
+      `       }`,
+      `  3. Replace the \${${fixVar}} placeholder in ~/.muse/models.json with the literal key.`,
+    ].join("\n");
+  }
+
+  return [
+    head,
+    ``,
+    `Add an "apiKey" to this model in ~/.muse/models.json or ~/.muse/models.local.json,`,
+    `or wire it through a \${ENV_VAR} placeholder and export the variable.`,
+  ].join("\n");
 }
 
 export function createLLMClient(opts: CreateClientOpts): LLMClient {
