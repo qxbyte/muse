@@ -1,6 +1,6 @@
 {
   "name": "@qxbyte/muse",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A TypeScript agent CLI built around OpenAI-compatible APIs. First-class support for self-hostable and Chinese LLMs (DeepSeek, Qwen, Kimi, GLM, Ollama, MiMo).",
   "type": "module",
   "license": "MIT",
