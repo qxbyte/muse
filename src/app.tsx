@@ -638,24 +638,27 @@ export function App({
               <Text dimColor>{`  (will send after current turn · ${queuedInputs.length} pending)`}</Text>
             </Box>
           )}
-          <Box marginTop={1} flexDirection="row">
-            <Text
-              backgroundColor={state.status === "idle" ? "#262626" : "#3a2f00"}
-              color={state.status === "idle" ? "gray" : "yellow"}
-              bold
-            >
-              {" › "}
+          <Box marginTop={1} flexDirection="column">
+            <Text backgroundColor="#262626">
+              {" ".repeat(Math.max(1, termWidth - 1))}
             </Text>
-            <BgTextInput
-              key={inputRemountKey}
-              value={input}
-              onChange={setInput}
-              onSubmit={handleSubmit}
-              width={Math.max(10, termWidth - 4)}
-              backgroundColor={state.status === "idle" ? "#262626" : "#3a2f00"}
-              color={state.status === "idle" ? undefined : "yellow"}
-              isActive={acceptingInput}
-            />
+            <Box flexDirection="row">
+              <Text backgroundColor="#262626" color="gray" bold>
+                {" ❯ "}
+              </Text>
+              <BgTextInput
+                key={inputRemountKey}
+                value={input}
+                onChange={setInput}
+                onSubmit={handleSubmit}
+                width={Math.max(10, termWidth - 4)}
+                backgroundColor="#262626"
+                isActive={acceptingInput}
+              />
+            </Box>
+            <Text backgroundColor="#262626">
+              {" ".repeat(Math.max(1, termWidth - 1))}
+            </Text>
           </Box>
           {autocomplete && autocomplete.matches.length > 0 && (
             <SlashAutocomplete matches={autocomplete.matches} index={autocompleteIndex} />

@@ -8,7 +8,15 @@
  *   <in>/<max>         绝对值，便于核对
  *   ↑<in> ↓<out>       本会话累计 token（自 app 启动后；/resume 不回灌）
  *
- * 颜色：填充 <70% 绿，70–89% 黄，≥90% 红——给"快爆"明显视觉警告。
+ * 配色（对齐 Claude Code 的 footer）：
+ *   session id  → cyan bold        （如 Claude Code 的 "Sync code..." 标题色）
+ *   model       → magenta          （如 Claude Code 的 "Opus 4.7 (1M context)" 粉品红）
+ *   "ctx:"      → 默认白            （label 不 dim，醒目）
+ *   填充进度条   → 主题色：<70% green / 70–89% yellow / ≥90% red（"快爆"警告）
+ *   百分比 / in/max → dim gray      （次要信息）
+ *   "│"        → dim gray          （分隔符弱化）
+ *   ↑ 累计 in  → green
+ *   ↓ 累计 out → blueBright
  *
  * 宽度策略：
  *   termWidth >= 100   完整版（含累计 token）
@@ -53,6 +61,9 @@ export function FooterStatus({
   const pct = hasCtx ? Math.min(100, Math.round((lastInputTokens / contextWindow) * 100)) : 0;
   const ctxColor: "green" | "yellow" | "red" = pct >= 90 ? "red" : pct >= 70 ? "yellow" : "green";
 
+  const SEP = <Text dimColor>{" │ "}</Text>;
+  const SEP_DOT = <Text dimColor>{" · "}</Text>;
+
   // <60: 极简
   if (termWidth < 60) {
     const barW = BAR_TOTAL_COMPACT;
@@ -60,14 +71,14 @@ export function FooterStatus({
     const bar = "█".repeat(filled) + "░".repeat(barW - filled);
     return (
       <Box flexDirection="row">
-        <Text dimColor>{sid}</Text>
-        <Text dimColor>{" · "}</Text>
-        <Text dimColor>{model}</Text>
+        <Text color="cyan" bold>{sid}</Text>
+        {SEP_DOT}
+        <Text color="magenta">{model}</Text>
         {hasCtx && (
           <>
-            <Text dimColor>{" · "}</Text>
+            {SEP_DOT}
             <Text color={ctxColor}>{bar}</Text>
-            <Text color={ctxColor}>{` ${pct}%`}</Text>
+            <Text dimColor>{` ${pct}%`}</Text>
           </>
         )}
       </Box>
@@ -81,14 +92,15 @@ export function FooterStatus({
     const bar = "█".repeat(filled) + "░".repeat(barW - filled);
     return (
       <Box flexDirection="row">
-        <Text dimColor>{`@${sid}`}</Text>
-        <Text dimColor>{" | "}</Text>
-        <Text dimColor bold>{model}</Text>
+        <Text color="cyan" bold>{`@${sid}`}</Text>
+        {SEP}
+        <Text color="magenta">{model}</Text>
         {hasCtx && (
           <>
-            <Text dimColor>{" | ctx: "}</Text>
+            {SEP}
+            <Text>{"ctx: "}</Text>
             <Text color={ctxColor}>{bar}</Text>
-            <Text color={ctxColor}>{` ${pct}%`}</Text>
+            <Text dimColor>{` ${pct}%`}</Text>
           </>
         )}
       </Box>
@@ -102,19 +114,23 @@ export function FooterStatus({
 
   return (
     <Box flexDirection="row">
-      <Text dimColor>{`@${sid}`}</Text>
-      <Text dimColor>{" | "}</Text>
-      <Text dimColor bold>{model}</Text>
+      <Text color="cyan" bold>{`@${sid}`}</Text>
+      {SEP}
+      <Text color="magenta">{model}</Text>
       {hasCtx && (
         <>
-          <Text dimColor>{" | ctx: "}</Text>
+          {SEP}
+          <Text>{"ctx: "}</Text>
           <Text color={ctxColor}>{bar}</Text>
-          <Text color={ctxColor}>{` ${pct}%`}</Text>
+          <Text dimColor>{` ${pct}%`}</Text>
           <Text dimColor>{`  ${formatTokens(lastInputTokens)}/${formatTokens(contextWindow)}`}</Text>
         </>
       )}
-      <Text dimColor>{" | "}</Text>
-      <Text dimColor>{`↑${formatTokens(sessionInputTokens)} ↓${formatTokens(sessionOutputTokens)}`}</Text>
+      {SEP}
+      <Text>{"tok: "}</Text>
+      <Text color="green">{`↑${formatTokens(sessionInputTokens)}`}</Text>
+      <Text> </Text>
+      <Text color="blueBright">{`↓${formatTokens(sessionOutputTokens)}`}</Text>
     </Box>
   );
 }

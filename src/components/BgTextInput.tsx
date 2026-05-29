@@ -31,6 +31,8 @@ export interface BgTextInputProps {
   isActive?: boolean;
 }
 
+const BLINK_MS = 530; // 标准终端 cursor 闪烁周期
+
 export function BgTextInput({
   value,
   onChange,
@@ -41,11 +43,21 @@ export function BgTextInput({
   isActive = true,
 }: BgTextInputProps) {
   const [cursor, setCursor] = useState(value.length);
+  const [blinkOn, setBlinkOn] = useState(true);
 
   useEffect(() => {
     // value 外部改变（commitInput / remount）时把光标移到末尾或夹在合法范围
     setCursor((c) => Math.min(c, value.length));
   }, [value]);
+
+  // 光标闪烁：cursor / value 变化时重启 timer 让光标"常亮"过编辑动作；
+  // isActive=false（模态弹起）时不闪也不显
+  useEffect(() => {
+    if (!isActive) return;
+    setBlinkOn(true);
+    const id = setInterval(() => setBlinkOn((b) => !b), BLINK_MS);
+    return () => clearInterval(id);
+  }, [isActive, cursor, value]);
 
   useInput(
     (input, key) => {
@@ -95,12 +107,22 @@ export function BgTextInput({
   const at = view.atChar;
   const padLen = Math.max(0, width - view.consumedWidth);
 
+  // 光标渲染：active + blinkOn 时 inverse 高亮；blinkOff 或 inactive 时
+  // 保持背景色不显光标，单元格宽度不变（避免布局抖动）
+  const showCursor = isActive && blinkOn;
+
   return (
     <Text backgroundColor={backgroundColor} color={color}>
       {view.before}
-      <Text backgroundColor={backgroundColor} color={color} inverse>
-        {at}
-      </Text>
+      {showCursor ? (
+        <Text backgroundColor="blue" color={color} dimColor>
+          {at}
+        </Text>
+      ) : (
+        <Text backgroundColor={backgroundColor} color={color}>
+          {at}
+        </Text>
+      )}
       {view.after}
       {" ".repeat(padLen)}
     </Text>
