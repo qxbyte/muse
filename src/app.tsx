@@ -8,7 +8,7 @@
 
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
-import TextInput from "ink-text-input";
+import { BgTextInput } from "./components/BgTextInput.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -618,19 +618,24 @@ export function App({
       )}
       {acceptingInput && (
         <Box flexDirection="column">
-          <Box
-            marginTop={1}
-            borderStyle="bold"
-            borderColor={state.status === "idle" ? "gray" : "yellow"}
-            borderLeft={false}
-            borderRight={false}
-            paddingX={1}
-            flexDirection="row"
-          >
-            <Text color={state.status === "idle" ? undefined : "yellow"} dimColor={state.status === "idle"}>{"› "}</Text>
-            <Box flexGrow={1}>
-              <TextInput key={inputRemountKey} value={input} onChange={setInput} onSubmit={handleSubmit} />
-            </Box>
+          <Box marginTop={1} flexDirection="row">
+            <Text
+              backgroundColor={state.status === "idle" ? "#262626" : "#3a2f00"}
+              color={state.status === "idle" ? "gray" : "yellow"}
+              bold
+            >
+              {" › "}
+            </Text>
+            <BgTextInput
+              key={inputRemountKey}
+              value={input}
+              onChange={setInput}
+              onSubmit={handleSubmit}
+              width={Math.max(10, termWidth - 4)}
+              backgroundColor={state.status === "idle" ? "#262626" : "#3a2f00"}
+              color={state.status === "idle" ? undefined : "yellow"}
+              isActive={acceptingInput}
+            />
           </Box>
           {autocomplete && autocomplete.matches.length > 0 && (
             <SlashAutocomplete matches={autocomplete.matches} index={autocompleteIndex} />

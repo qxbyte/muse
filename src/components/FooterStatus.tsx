@@ -86,7 +86,7 @@ export function FooterStatus({
         <Text dimColor bold>{model}</Text>
         {hasCtx && (
           <>
-            <Text dimColor>{"  │  ctx: "}</Text>
+            <Text dimColor>{" | ctx: "}</Text>
             <Text color={ctxColor}>{bar}</Text>
             <Text color={ctxColor}>{` ${pct}%`}</Text>
           </>
@@ -107,7 +107,7 @@ export function FooterStatus({
       <Text dimColor bold>{model}</Text>
       {hasCtx && (
         <>
-          <Text dimColor>{"  │  ctx: "}</Text>
+          <Text dimColor>{" | ctx: "}</Text>
           <Text color={ctxColor}>{bar}</Text>
           <Text color={ctxColor}>{` ${pct}%`}</Text>
           <Text dimColor>{`  ${formatTokens(lastInputTokens)}/${formatTokens(contextWindow)}`}</Text>
