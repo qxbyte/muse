@@ -68,19 +68,49 @@ export class OpenAICompatibleClient implements LLMClient {
     const aiMessages = convertMessages(messages, systemPrompt);
     const aiTools = tools ? convertTools(tools) : undefined;
 
-    try {
-      const result = streamText({
-        model: this.modelProvider,
-        messages: aiMessages,
-        tools: aiTools,
-        temperature,
-        maxTokens,
-        abortSignal,
-      });
+    // 重试：仅在还没收到任何 chunk 时（连接级错误）退避重试，最多 3 次
+    let attempt = 0;
+    const maxAttempts = 3;
+    let result: ReturnType<typeof streamText> | undefined;
+    while (true) {
+      try {
+        result = streamText({
+          model: this.modelProvider,
+          messages: aiMessages,
+          tools: aiTools,
+          temperature,
+          maxTokens,
+          abortSignal,
+        });
+        break;
+      } catch (err) {
+        if (abortSignal?.aborted) {
+          yield { type: "error", error: err instanceof Error ? err : new Error(String(err)) };
+          return;
+        }
+        if (!isRetryable(err) || attempt >= maxAttempts - 1) {
+          yield { type: "error", error: err instanceof Error ? err : new Error(String(err)) };
+          return;
+        }
+        const delay = 1000 * Math.pow(2, attempt);
+        log.warn(`LLM connect failed (attempt ${attempt + 1}/${maxAttempts}); retrying in ${delay}ms`, {
+          msg: err instanceof Error ? err.message : String(err),
+        });
+        await sleep(delay, abortSignal);
+        attempt += 1;
+      }
+    }
 
+    if (!result) {
+      yield { type: "error", error: new Error("Internal: stream result is undefined after retry loop.") };
+      return;
+    }
+    const stream = result.fullStream;
+
+    try {
       const seenToolCalls = new Set<string>();
 
-      for await (const part of result.fullStream) {
+      for await (const part of stream) {
         switch (part.type) {
           case "text-delta":
             yield { type: "text", delta: part.textDelta };
@@ -205,6 +235,51 @@ function convertTools(tools: ToolDefinition[]): ToolSet {
     });
   }
   return result;
+}
+
+function isRetryable(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  const code = (err as Error & { code?: string }).code ?? "";
+  if (
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT" ||
+    code === "ENOTFOUND" ||
+    code === "ECONNREFUSED" ||
+    code === "EAI_AGAIN"
+  ) {
+    return true;
+  }
+  if (
+    msg.includes("fetch failed") ||
+    msg.includes("network") ||
+    msg.includes("socket hang up") ||
+    msg.includes("under maintenance") ||
+    msg.includes("rate limit") ||
+    msg.includes("429") ||
+    msg.includes("502") ||
+    msg.includes("503") ||
+    msg.includes("504")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+async function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    if (abortSignal?.aborted) return reject(new Error("aborted"));
+    const t = setTimeout(() => {
+      abortSignal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      abortSignal?.removeEventListener("abort", onAbort);
+      reject(new Error("aborted"));
+    };
+    abortSignal?.addEventListener("abort", onAbort);
+  });
 }
 
 function mapFinishReason(reason: string | undefined): "stop" | "tool_calls" | "length" | "content_filter" | "error" | "unknown" {
