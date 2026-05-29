@@ -616,8 +616,28 @@ export function App({
           }}
         />
       )}
+      {state.status !== "idle" && (
+        <StatusLine
+          startTime={state.turnStartTime}
+          firstTextTime={state.turnFirstTextTime}
+          inputTokens={state.turnInputTokens}
+          runningTool={state.runningTool}
+          lang={lang}
+        />
+      )}
+      {progress && <ProgressBanner state={progress} />}
       {acceptingInput && (
         <Box flexDirection="column">
+          {queuedInputs.length > 0 && (
+            <Box flexDirection="column" marginLeft={2} marginTop={1}>
+              {queuedInputs.map((q, i) => (
+                <Text key={i} color="yellow" dimColor>
+                  {`↳ queued: ${q.length > 60 ? q.slice(0, 60) + "…" : q}`}
+                </Text>
+              ))}
+              <Text dimColor>{`  (will send after current turn · ${queuedInputs.length} pending)`}</Text>
+            </Box>
+          )}
           <Box marginTop={1} flexDirection="row">
             <Text
               backgroundColor={state.status === "idle" ? "#262626" : "#3a2f00"}
@@ -640,28 +660,8 @@ export function App({
           {autocomplete && autocomplete.matches.length > 0 && (
             <SlashAutocomplete matches={autocomplete.matches} index={autocompleteIndex} />
           )}
-          {queuedInputs.length > 0 && (
-            <Box flexDirection="column" marginLeft={2} marginTop={0}>
-              {queuedInputs.map((q, i) => (
-                <Text key={i} color="yellow" dimColor>
-                  {`↳ queued: ${q.length > 60 ? q.slice(0, 60) + "…" : q}`}
-                </Text>
-              ))}
-              <Text dimColor>{`  (will send after current turn · ${queuedInputs.length} pending)`}</Text>
-            </Box>
-          )}
         </Box>
       )}
-      {state.status !== "idle" && (
-        <StatusLine
-          startTime={state.turnStartTime}
-          firstTextTime={state.turnFirstTextTime}
-          inputTokens={state.turnInputTokens}
-          runningTool={state.runningTool}
-          lang={lang}
-        />
-      )}
-      {progress && <ProgressBanner state={progress} />}
       <Box marginTop={1} flexDirection="column">
         <FooterStatus
           sessionId={session.meta.id}
