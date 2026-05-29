@@ -188,6 +188,21 @@ export function App({
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const agentRef = useRef<Agent | null>(null);
 
+  // 输入队列：模型在跑时用户继续提交的消息暂存在这里，本轮结束 onTurnEnd 自动出队跑下一轮
+  // ref 作真相源（同步访问），state 用于触发 UI 重渲染显示队列预览
+  const queuedInputsRef = useRef<string[]>([]);
+  const [queuedInputs, setQueuedInputs] = useState<string[]>([]);
+  const enqueueInput = (text: string) => {
+    queuedInputsRef.current.push(text);
+    setQueuedInputs([...queuedInputsRef.current]);
+  };
+  const dequeueInput = (): string | null => {
+    if (queuedInputsRef.current.length === 0) return null;
+    const front = queuedInputsRef.current.shift()!;
+    setQueuedInputs([...queuedInputsRef.current]);
+    return front;
+  };
+
   // 输入历史：纯用户输入（不含 slash 命令），最旧 → 最新 push 到末尾
   // historyIndex: -1=未导航；0=最新；len-1=最旧
   const inputHistoryRef = useRef<string[]>(extractUserInputs(initialMessages ?? []));
@@ -289,6 +304,19 @@ export function App({
           dispatch({ type: "history_set", messages: msgs });
           dispatch({ type: "stream_reset" });
           dispatch({ type: "set_status", status: "idle" });
+
+          // 队列有货：取下一条立刻开新轮（setTimeout 跳出 onTurnEnd 内部递归调栈）
+          const next = dequeueInput();
+          if (next) {
+            setTimeout(() => {
+              dispatch({ type: "user_submit" });
+              agent.runTurn(next).catch((err) => {
+                const m = err instanceof Error ? err.message : String(err);
+                dispatch({ type: "stream_delta", delta: `\n[error] ${m}\n` });
+                dispatch({ type: "set_status", status: "idle" });
+              });
+            }, 0);
+          }
         },
         onError: (err) => {
           dispatch({ type: "stream_delta", delta: `\n[error] ${err.message}\n` });
@@ -348,11 +376,13 @@ export function App({
         else commitInput(hist[hist.length - 1 - next] ?? "");
       }
     },
-    { isActive: state.status === "idle" && !pending && !picker && !sessionPicker },
+    // 模型在跑时也要响应键盘（让用户能 Ctrl+C / Shift+Tab / autocomplete 导航）；
+    // 仅模态弹起时让出键盘所有权
+    { isActive: !pending && !picker && !sessionPicker },
   );
 
-  const acceptingInput =
-    state.status === "idle" && pending === null && picker === null && sessionPicker === null;
+  // 输入框：模态弹起时让出，否则始终显示——模型在跑时也能输入，提交进入队列
+  const acceptingInput = pending === null && picker === null && sessionPicker === null;
 
   const actions: SlashActions = useMemo(
     () => ({
@@ -445,6 +475,13 @@ export function App({
 
       const parsed = parseSlash(trimmed);
       if (parsed) {
+        // 模型在跑时 slash 命令一律拒绝——/clear /compact /resume 会改 messages 与 agent
+        // 正在跑的回复冲突；reduce 也无法把 slash 排到队列里执行（会污染 history 时序）。
+        // 用户可 Ctrl+C 取消当前轮，或等结束。
+        if (state.status !== "idle") {
+          commitInput("");
+          return;
+        }
         const cmd = slash.get(parsed.name);
         commitInput("");
         if (!cmd) {
@@ -487,6 +524,12 @@ export function App({
       historyIndexRef.current = -1;
       savedDraftRef.current = "";
 
+      // 模型在跑 → 入队，等本轮 onTurnEnd 出队继续
+      if (state.status !== "idle") {
+        enqueueInput(trimmed);
+        return;
+      }
+
       dispatch({ type: "user_submit" });
       try {
         await agentRef.current?.runTurn(trimmed);
@@ -496,7 +539,7 @@ export function App({
         dispatch({ type: "set_status", status: "idle" });
       }
     },
-    [slash, cwd, llm, session, settings, settingsSources, modelsRegistry, state.inputTokens, state.outputTokens, state.totalTokens, actions, autocomplete, autocompleteIndex],
+    [slash, cwd, llm, session, settings, settingsSources, modelsRegistry, state.inputTokens, state.outputTokens, state.totalTokens, state.status, actions, autocomplete, autocompleteIndex],
   );
 
   function appendAssistantText(text: string) {
@@ -577,19 +620,29 @@ export function App({
           <Box
             marginTop={1}
             borderStyle="single"
-            borderColor="gray"
+            borderColor={state.status === "idle" ? "gray" : "yellow"}
             borderLeft={false}
             borderRight={false}
             paddingX={1}
             flexDirection="row"
           >
-            <Text dimColor>{"› "}</Text>
+            <Text color={state.status === "idle" ? undefined : "yellow"} dimColor={state.status === "idle"}>{"› "}</Text>
             <Box flexGrow={1}>
               <TextInput key={inputRemountKey} value={input} onChange={setInput} onSubmit={handleSubmit} />
             </Box>
           </Box>
           {autocomplete && autocomplete.matches.length > 0 && (
             <SlashAutocomplete matches={autocomplete.matches} index={autocompleteIndex} />
+          )}
+          {queuedInputs.length > 0 && (
+            <Box flexDirection="column" marginLeft={2} marginTop={0}>
+              {queuedInputs.map((q, i) => (
+                <Text key={i} color="yellow" dimColor>
+                  {`↳ queued: ${q.length > 60 ? q.slice(0, 60) + "…" : q}`}
+                </Text>
+              ))}
+              <Text dimColor>{`  (will send after current turn · ${queuedInputs.length} pending)`}</Text>
+            </Box>
           )}
         </Box>
       )}
