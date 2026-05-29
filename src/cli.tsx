@@ -53,7 +53,7 @@ async function main() {
       let llmProviderName: string;
       let llmModelName: string;
       try {
-        // models.json 里找到 settings.llm.model（或 -m）对应的 entry：
+        // models.local.json 里找到 settings.llm.model（或 -m）对应的 entry：
         // 注入 apiKey 到 process.env.MUSE_ACTIVE_API_KEY，业务通过 env 读
         const entry = modelsRegistry && model ? findEntry(modelsRegistry, model) : undefined;
         if (entry) {
@@ -64,7 +64,7 @@ async function main() {
         } else {
           // 优先级 2：回退到 settings.json 原生 provider/model + providers 配置
           if (!provider || !model) {
-            die("No model configured. Either define one in ~/.muse/models.json or set llm.provider+llm.model in settings.json.");
+            die("No model configured. Either define one in ~/.muse/models.local.json or set llm.provider+llm.model in settings.json.");
           }
           llm = createLLMClient({ provider, model, providers: settings.providers ?? {} });
           llmProviderName = provider;

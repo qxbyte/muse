@@ -37,7 +37,7 @@ export interface SlashActions {
   pickModel(items: ModelEntry[], currentId?: string): Promise<ModelEntry | null>;
   /** 弹出 SessionSelector 模态，让用户选历史会话；resolve 为 null 表示取消。 */
   pickSession(items: SessionSummary[], currentId?: string): Promise<SessionSummary | null>;
-  /** 重新加载所有层级的 settings.json + models.json，并刷新 LLM / 权限。 */
+  /** 重新加载所有层级的 settings.json + models.local.json，并刷新 LLM / 权限。 */
   reloadSettings(): Promise<{ settings: Settings; sources: string[] }>;
   /** 当前 PermissionMode（用于 /mode 显示）。 */
   getMode(): PermissionMode;
@@ -57,7 +57,7 @@ export interface SlashCommandContext {
   session: Session;
   settings: Settings;
   settingsSources: string[];
-  /** 用户的 models.json 仓库；未配置时为 undefined。 */
+  /** 用户的 models.local.json 仓库；未配置时为 undefined。 */
   modelsRegistry?: ModelsRegistry;
   history: Message[];
   tokens: SessionTokens;

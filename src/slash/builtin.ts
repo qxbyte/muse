@@ -155,7 +155,7 @@ const COMPACT: SlashCommand = {
 
 const MODELS: SlashCommand = {
   name: "models",
-  description: "pick a model from ~/.muse/models.json (↑↓ to navigate)",
+  description: "pick a model from ~/.muse/models.local.json (↑↓ to navigate)",
   async execute(ctx) {
     // ctx 没拿到 registry 时同步重读一次：可能 muse 启动后用户改了文件
     let registry = ctx.modelsRegistry;
@@ -177,7 +177,7 @@ const MODELS: SlashCommand = {
     if (visible.length === 0) {
       return {
         display:
-          `models.json has no available models.\n` +
+          `models.local.json has no available models.\n` +
           `Check that "availableModels" lists at least one id present in "models".`,
       };
     }
@@ -198,7 +198,7 @@ const MODELS: SlashCommand = {
 
 function renderLoadErrors(errors: LoadError[]): string {
   return [
-    `models.json was found but failed to load:`,
+    `models.local.json was found but failed to load:`,
     ``,
     ...errors.flatMap((e) => [`  ${shortPath(e.path)}`, `    ${e.message}`]),
     ``,
@@ -210,7 +210,7 @@ function renderLoadErrors(errors: LoadError[]): string {
 function renderEmptyRegistryHint(): string {
   return [
     `No models registry found.`,
-    `Create ~/.muse/models.json with a "models" array. Example:`,
+    `Create ~/.muse/models.local.json with a "models" array. Example:`,
     ``,
     `{`,
     `  "models": [`,

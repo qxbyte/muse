@@ -1,7 +1,7 @@
 /**
  * ${ENV_VAR} 占位符递归展开。
  *
- * settings.json / models.json 都共用这套机制，避免把明文凭证落到可入 git 的文件。
+ * settings.json / models.local.json 都共用这套机制，避免把明文凭证落到可入 git 的文件。
  * 未定义的 env var → 空字符串（不抛错，让上层校验"必填字段是否非空"决定行为）。
  */
 

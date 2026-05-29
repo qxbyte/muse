@@ -34,7 +34,7 @@ export function setActiveModelEnv(entry: ModelEntry): void {
 }
 
 /**
- * 从用户在 models.json 里定义的 ModelEntry 构造 LLMClient。
+ * 从用户在 models.local.json 里定义的 ModelEntry 构造 LLMClient。
  *
  * apiKey 不直接传值——而是从 process.env[ACTIVE_API_KEY_ENV] 读，调用前必须先
  * setActiveModelEnv(entry) 写入。这样业务代码只看到 env name，不直接持有 key。
@@ -77,25 +77,22 @@ function buildMissingKeyMessage(entry: ModelEntry): string {
     return [
       head,
       ``,
-      `Cause: ~/.muse/models.json sets apiKey to a placeholder referencing ${list},`,
+      `Cause: ~/.muse/models.local.json sets apiKey to a placeholder referencing ${list},`,
       `       but the shell environment does not have ${envVars.length > 1 ? "those variables" : "that variable"} set.`,
       ``,
       `Fix (pick one):`,
-      `  1. Export the variable in your shell:`,
+      `  1. Replace the \${${fixVar}} placeholder in ~/.muse/models.local.json with the literal key`,
+      `     (recommended — the file is local-only and never enters git).`,
+      `  2. Export the variable in your shell:`,
       `       export ${fixVar}=<your-key>`,
-      `  2. Put the key directly in ~/.muse/models.local.json (gitignored, only-this-machine):`,
-      `       {`,
-      `         "models": [ { "id": "${entry.id}", "apiKey": "<your-key>" } ]`,
-      `       }`,
-      `  3. Replace the \${${fixVar}} placeholder in ~/.muse/models.json with the literal key.`,
     ].join("\n");
   }
 
   return [
     head,
     ``,
-    `Add an "apiKey" to this model in ~/.muse/models.json or ~/.muse/models.local.json,`,
-    `or wire it through a \${ENV_VAR} placeholder and export the variable.`,
+    `Edit ~/.muse/models.local.json and set "apiKey" on the "${entry.id}" entry`,
+    `(plain text is fine — the file stays local-only).`,
   ].join("\n");
 }
 

@@ -1,15 +1,20 @@
 /**
  * Models registry：用户级模型库。
  *
- * 位置：~/.muse/models.json (+ ~/.muse/models.local.json 兜底放明文 key)
+ * 位置：~/.muse/models.local.json （单文件，本机本地；从不入 git）
  *
  * 设计：
  * - models 数组的 id 是**用户起的名字**，不在代码里硬编码；availableModels 决定 /models
  *   selector 里显示哪些
- * - apiKey 字段支持 ${ENV_VAR} 占位符（沿用 settings.json 机制）
+ * - apiKey 字段可以直接写明文（推荐：文件就在本机本地），也支持 ${ENV_VAR} 占位符
  * - baseUrl 是基址，SDK 自己拼 /chat/completions；用户填全 endpoint 时自动剥后缀
- * - 优先级 local.json > models.json（同 id 后者覆盖前者；availableModels 取最后非空）
  * - 不存在文件 → 返回 undefined（调用方回退到 settings.json llm 配置）
+ *
+ * Why `.local.json` 单文件而非 `models.json`：
+ *   muse 0.1.x 早期是双文件（models.json git-tracked + models.local.json 本地兜底），
+ *   但实际使用中并没有 "git-track 一份不含 key 的模板" 的场景——用户的模型清单本就
+ *   是私人物件。为避免新用户被两份文件混淆，合并为单文件，沿用 `.local.json`
+ *   后缀作为 "本机本地，绝不入 git" 的视觉提示。
  */
 
 import { readFile } from "node:fs/promises";
@@ -38,7 +43,7 @@ export interface ModelEntry {
 
 /**
  * 输入校验：baseUrl / url 任一非空即可。
- * 用户实际写的 models.json 多用 `url`（OpenAI 兼容协议惯例命名），
+ * 用户实际写的 models.local.json 多用 `url`（OpenAI 兼容协议惯例命名），
  * 我们接受两种别名，normalize 阶段归一。
  */
 export const ModelEntryInputSchema = z
@@ -89,45 +94,41 @@ export interface LoadedModels {
   errors: LoadError[];
 }
 
-const CANDIDATES = (): string[] => [
-  join(homedir(), ".muse", "models.json"),
-  join(homedir(), ".muse", "models.local.json"),
-];
+export const MODELS_PATH = (): string => join(homedir(), ".muse", "models.local.json");
 
 export async function loadModelsRegistry(): Promise<LoadedModels> {
   const sources: string[] = [];
   const errors: LoadError[] = [];
-  let merged: ModelsRegistry | undefined;
+  const path = MODELS_PATH();
 
-  for (const path of CANDIDATES()) {
-    if (!existsSync(path)) continue;
-    let raw: unknown;
-    try {
-      raw = JSON.parse(await readFile(path, "utf-8"));
-    } catch (err) {
-      const msg = `JSON parse error: ${err instanceof Error ? err.message : String(err)}`;
-      log.warn(`Failed to parse ${path}: ${msg}`);
-      errors.push({ path, message: msg });
-      continue;
-    }
-    const parsed = ModelsRegistryInputSchema.safeParse(raw);
-    if (!parsed.success) {
-      const msg = formatZodIssues(parsed.error.issues);
-      log.warn(`Invalid models registry at ${path}: ${msg}`);
-      errors.push({ path, message: msg });
-      continue;
-    }
-    const normalized: ModelsRegistry = {
-      ...parsed.data,
-      models: parsed.data.models.map(normalizeModelEntry),
-    };
-    merged = mergeRegistries(merged, normalized);
-    sources.push(path);
+  if (!existsSync(path)) {
+    return { registry: undefined, sources, errors };
   }
 
-  if (!merged) return { registry: undefined, sources, errors };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(path, "utf-8"));
+  } catch (err) {
+    const msg = `JSON parse error: ${err instanceof Error ? err.message : String(err)}`;
+    log.warn(`Failed to parse ${path}: ${msg}`);
+    errors.push({ path, message: msg });
+    return { registry: undefined, sources, errors };
+  }
 
-  const expanded = expandEnvVars(merged) as ModelsRegistry;
+  const parsed = ModelsRegistryInputSchema.safeParse(raw);
+  if (!parsed.success) {
+    const msg = formatZodIssues(parsed.error.issues);
+    log.warn(`Invalid models registry at ${path}: ${msg}`);
+    errors.push({ path, message: msg });
+    return { registry: undefined, sources, errors };
+  }
+
+  const normalized: ModelsRegistry = {
+    ...parsed.data,
+    models: parsed.data.models.map(normalizeModelEntry),
+  };
+  sources.push(path);
+  const expanded = expandEnvVars(normalized) as ModelsRegistry;
   return { registry: expanded, sources, errors };
 }
 
@@ -135,20 +136,6 @@ function formatZodIssues(issues: z.ZodIssue[]): string {
   return issues
     .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
     .join("; ");
-}
-
-/** 合并：models 按 id 取后者；availableModels 取后者（非空时）。 */
-function mergeRegistries(low: ModelsRegistry | undefined, high: ModelsRegistry): ModelsRegistry {
-  if (!low) return high;
-  const byId = new Map<string, ModelEntry>();
-  for (const m of low.models) byId.set(m.id, m);
-  for (const m of high.models) byId.set(m.id, m);
-  return {
-    ...low,
-    ...high,
-    models: [...byId.values()],
-    availableModels: high.availableModels ?? low.availableModels,
-  };
 }
 
 /**
