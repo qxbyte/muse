@@ -48,6 +48,15 @@ export function buildSystemPrompt(opts: SystemPromptOpts): string {
       `- When the user asks a question that does not need tools, just answer.`,
   );
 
+  if (toolNames.includes("TodoWrite")) {
+    sections.push(
+      `# Task management\n` +
+        `- For non-trivial, multi-step work, use TodoWrite to plan and track progress.\n` +
+        `- Keep exactly one task in_progress; mark a task completed immediately when done.\n` +
+        `- Skip it for trivial single-step requests.`,
+    );
+  }
+
   if (lang === "zh-CN") {
     sections.push(`# Output language\nReply in Chinese (简体中文) unless the user writes in English.`);
   }

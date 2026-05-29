@@ -54,6 +54,8 @@ export interface ToolMessage {
   summary?: string;
   /** UI-only status dot color: success(green) / error(red) / warn(yellow). Default derived from isError. */
   kind?: "success" | "error" | "warn";
+  /** 产生该结果的工具名；UI 据此做工具专属渲染（如 TodoWrite 隐藏结果行）。 */
+  toolName?: string;
 }
 
 export type Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage;

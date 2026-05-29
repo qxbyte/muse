@@ -11,6 +11,7 @@ import { marked } from "marked";
 // @ts-expect-error marked-terminal 7.x 无内置 .d.ts；运行时正常
 import { markedTerminal } from "marked-terminal";
 import type { Message, ContentPart } from "../types/index.js";
+import type { TodoItem } from "../tools/builtin/todo.js";
 
 // 全局注册一次。markedTerminal() 接受样式参数（heading / blockquote / code 等），先用默认值。
 marked.use(markedTerminal() as Parameters<typeof marked.use>[0]);
@@ -33,6 +34,8 @@ export function MessageView({ message }: { message: Message }) {
     case "assistant":
       return <AssistantMessage content={message.content} />;
     case "tool":
+      // TodoWrite 的清单已在 tool_use 调用处渲染，结果行多余 → 不重复显示
+      if (message.toolName === "TodoWrite") return null;
       return (
         <ToolResultLine
           isError={message.isError ?? false}
@@ -82,6 +85,9 @@ function AssistantMessage({ content }: { content: ContentPart[] }) {
           return <AssistantTextPart key={i} text={part.text} />;
         }
         if (part.type === "tool_use") {
+          if (part.name === "TodoWrite") {
+            return <TodoList key={i} todos={extractTodos(part.args)} />;
+          }
           return <ToolCallLine key={i} name={part.name} args={part.args} />;
         }
         return null;
@@ -114,6 +120,54 @@ function ToolCallLine({ name, args }: { name: string; args: unknown }) {
       </Box>
     </Box>
   );
+}
+
+function extractTodos(args: unknown): TodoItem[] {
+  if (typeof args !== "object" || args === null) return [];
+  const todos = (args as { todos?: unknown }).todos;
+  return Array.isArray(todos) ? (todos as TodoItem[]) : [];
+}
+
+// 仿 Claude Code 的 checkbox 清单：完成态打钩 + 删除线，进行中高亮，待办置灰。
+function TodoList({ todos }: { todos: TodoItem[] }) {
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="row">
+        <Text color="yellow">{"→ "}</Text>
+        <Text color="yellow" bold>Todos</Text>
+      </Box>
+      {todos.map((todo, i) => (
+        <TodoRow key={i} todo={todo} />
+      ))}
+    </Box>
+  );
+}
+
+function TodoRow({ todo }: { todo: TodoItem }) {
+  const label = todo.status === "in_progress" && todo.activeForm ? todo.activeForm : todo.content;
+  switch (todo.status) {
+    case "completed":
+      return (
+        <Box flexDirection="row" marginLeft={2}>
+          <Text color="green">{"☒ "}</Text>
+          <Text dimColor strikethrough>{label}</Text>
+        </Box>
+      );
+    case "in_progress":
+      return (
+        <Box flexDirection="row" marginLeft={2}>
+          <Text color="cyan" bold>{"☐ "}</Text>
+          <Text color="cyan" bold>{label}</Text>
+        </Box>
+      );
+    default:
+      return (
+        <Box flexDirection="row" marginLeft={2}>
+          <Text dimColor>{"☐ "}</Text>
+          <Text dimColor>{label}</Text>
+        </Box>
+      );
+  }
 }
 
 function ToolResultLine({

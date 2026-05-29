@@ -1,12 +1,20 @@
 /**
  * TodoWrite 工具：维护 session 内任务清单。
  *
- * 把完整 items 数组替换进 ctx.todos。约定：一次只一个 in_progress；完成立即标 completed
- * 不要批；任务尽量原子。
+ * 把完整 todos 数组替换进 ctx.todos。约定：一次只一个 in_progress；完成立即标 completed
+ * 不要批；任务尽量原子。MessageView 会读 args.todos 渲染 checkbox 清单。
  */
 
 import { z } from "zod";
 import { defineTool } from "../types.js";
+
+export type TodoStatus = "pending" | "in_progress" | "completed";
+
+export interface TodoItem {
+  content: string;
+  status: TodoStatus;
+  activeForm?: string;
+}
 
 const TodoSchema = z.object({
   content: z.string().describe("Imperative one-line task description (e.g. 'Run the test suite')."),
@@ -15,7 +23,7 @@ const TodoSchema = z.object({
 });
 
 const TodoWriteArgs = z.object({
-  items: z.array(TodoSchema).describe("Full list. Replaces the current store."),
+  todos: z.array(TodoSchema).describe("Full list. Replaces the current store."),
 });
 
 export const TodoWriteTool = defineTool({
@@ -26,7 +34,7 @@ export const TodoWriteTool = defineTool({
     "Use when the task has 3+ distinct steps or is non-trivial. Skip for single trivial actions.",
   parameters: TodoWriteArgs,
   permission: "read",
-  summarize: (args) => `TodoWrite(${args.items.length} items)`,
+  summarize: (args) => `TodoWrite(${args.todos.length} items)`,
   async execute(args, ctx) {
     if (!ctx.todos) {
       return {
@@ -34,13 +42,13 @@ export const TodoWriteTool = defineTool({
         isError: true,
       };
     }
-    ctx.todos.set(args.items);
-    const summary = args.items
+    ctx.todos.set(args.todos);
+    const summary = args.todos
       .map((t, i) => `${i + 1}. ${t.status === "completed" ? "[x]" : t.status === "in_progress" ? "[~]" : "[ ]"} ${t.content}`)
       .join("\n");
     return {
-      content: `Updated todos (${args.items.length} items):\n${summary}`,
-      summary: `Todos: ${args.items.filter((t) => t.status === "completed").length}/${args.items.length} done`,
+      content: `Updated todos (${args.todos.length} items):\n${summary}`,
+      summary: `Todos: ${args.todos.filter((t) => t.status === "completed").length}/${args.todos.length} done`,
     };
   },
 });

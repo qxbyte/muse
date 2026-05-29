@@ -227,6 +227,7 @@ export class Agent {
       toolUseId: id,
       content,
       isError,
+      toolName: name,
       ...(diff ? { diff } : {}),
       ...(summary ? { summary } : {}),
       ...(kind ? { kind } : {}),

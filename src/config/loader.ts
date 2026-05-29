@@ -40,7 +40,7 @@ const DEFAULTS: Settings = {
     ollama: { baseUrl: "http://localhost:11434/v1" },
   },
   permissions: {
-    allow: ["Read", "Grep", "Glob"],
+    allow: ["Read", "Grep", "Glob", "TodoWrite"],
     ask: ["Write", "Edit", "Bash"],
     deny: [],
     defaultMode: "ask",
