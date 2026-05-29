@@ -26,8 +26,18 @@ export interface AgentEvents {
   onToolCallArgs?: (id: string, args: unknown) => void;
   onToolResult?: (id: string, name: string, content: string, isError: boolean, summary?: string) => void;
   onPermissionRequest?: (toolName: string, args: unknown, summary: string) => Promise<PermissionDecision>;
+  /** AskUserQuestion 工具调用时触发；resolve 把整批答案数组回填给工具。 */
+  onAskQuestions?: (
+    questions: import("../tools/builtin/ask-user-question.js").AskQuestion[],
+  ) => Promise<import("../tools/builtin/ask-user-question.js").AskQuestionResponse[]>;
   onUsage?: (usage: TokenUsage) => void;
   onError?: (error: Error) => void;
+  /**
+   * 一段 assistant 流结束、assistantMessage 已 push 进 messages，但工具还没开始执行时触发。
+   * 用于 UI 立刻把这一批 tool_use calls 显示出来——避免"流完 → 第一个 result 到达"
+   * 之间用户面对空屏。turn 直接结束（无 tool calls）的场景不会触发，走 onTurnEnd。
+   */
+  onAssistantTurn?: () => void;
   onTurnEnd?: () => void;
 }
 
@@ -106,6 +116,9 @@ export class Agent {
         this.ctx.events?.onTurnEnd?.();
         return;
       }
+
+      // 流刚结束、tool 还没跑——给 UI 一个钩子立刻展示这一批 calls
+      this.ctx.events?.onAssistantTurn?.();
 
       // 执行工具调用
       for (const call of toolCallsToRun) {
@@ -207,6 +220,9 @@ export class Agent {
       abortSignal: this.ctx.abortSignal,
       askPermission: async () => true, // 已在外层处理
       todos: this.todos,
+      askQuestions: this.ctx.events?.onAskQuestions
+        ? (qs) => this.ctx.events!.onAskQuestions!(qs)
+        : undefined,
     };
 
     const result = await this.ctx.tools.execute(call.name, call.args, toolCtx);

@@ -8,6 +8,7 @@ import { GlobTool } from "./glob.js";
 import { TodoWriteTool } from "./todo.js";
 import { WebFetchTool } from "./webfetch.js";
 import { MemoryReadTool, MemoryWriteTool } from "./memory.js";
+import { AskUserQuestionTool } from "./ask-user-question.js";
 
 export {
   ReadTool,
@@ -20,6 +21,7 @@ export {
   WebFetchTool,
   MemoryReadTool,
   MemoryWriteTool,
+  AskUserQuestionTool,
 };
 
 export const BUILTIN_TOOLS: AnyTool[] = [
@@ -33,4 +35,5 @@ export const BUILTIN_TOOLS: AnyTool[] = [
   WebFetchTool,
   MemoryReadTool,
   MemoryWriteTool,
+  AskUserQuestionTool,
 ];

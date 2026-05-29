@@ -5,6 +5,7 @@
 
 import type { z } from "zod";
 import type { TodoStore } from "../loop/todos.js";
+import type { AskQuestion, AskQuestionResponse } from "./builtin/ask-user-question.js";
 
 export type PermissionLevel = "read" | "write" | "execute" | "network";
 
@@ -17,6 +18,11 @@ export interface ToolContext {
   invokeSubagent?: (prompt: string) => Promise<string>;
   /** Session 内 todo 清单（TodoWrite 写入；system prompt 读取注入下一轮）。 */
   todos?: TodoStore;
+  /**
+   * AskUserQuestion 工具用：一次性弹出整批选择题（链式 tab UI）。
+   * 返回数组与入参 questions 等长；Esc 取消时所有项 cancelled=true。
+   */
+  askQuestions?: (questions: AskQuestion[]) => Promise<AskQuestionResponse[]>;
 }
 
 export interface ToolExecuteResult {
