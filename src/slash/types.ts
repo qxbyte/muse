@@ -16,6 +16,7 @@ import type { Session, SessionSummary } from "../session/jsonl.js";
 import type { Message } from "../types/index.js";
 import type { Settings } from "../config/types.js";
 import type { ModelEntry, ModelsRegistry } from "../config/models.js";
+import type { PermissionMode } from "../permission/index.js";
 
 export interface SessionTokens {
   inputTokens: number;
@@ -38,6 +39,10 @@ export interface SlashActions {
   pickSession(items: SessionSummary[], currentId?: string): Promise<SessionSummary | null>;
   /** 重新加载所有层级的 settings.json + models.json，并刷新 LLM / 权限。 */
   reloadSettings(): Promise<{ settings: Settings; sources: string[] }>;
+  /** 当前 PermissionMode（用于 /mode 显示）。 */
+  getMode(): PermissionMode;
+  /** 切换 PermissionMode（用于 /mode <name>）。 */
+  setMode(mode: PermissionMode): void;
 }
 
 export interface SlashCommandContext {

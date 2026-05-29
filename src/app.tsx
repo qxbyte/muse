@@ -23,10 +23,11 @@ import { PermissionModeBar } from "./components/PermissionModeBar.js";
 import type { LLMClient } from "./llm/types.js";
 import { createLLMClient, createLLMClientFromModelEntry, setActiveModelEnv } from "./llm/client.js";
 import type { ToolRegistry } from "./tools/registry.js";
-import { PermissionGate, type PermissionMode } from "./permission/index.js";
+import { PermissionGate, type PermissionMode, type PermissionDecision } from "./permission/index.js";
 import { Session, type SessionSummary } from "./session/jsonl.js";
 import { Agent } from "./loop/agent.js";
 import { buildSystemPrompt } from "./loop/system-prompt.js";
+import { loadMemoryIndex } from "./loop/memory.js";
 import { loadSettings } from "./config/index.js";
 import { loadModelsRegistry, findEntry, type ModelEntry, type ModelsRegistry } from "./config/models.js";
 import type { Message, TokenUsage } from "./types/index.js";
@@ -145,6 +146,12 @@ export function App({
   const [autocompleteIndex, setAutocompleteIndex] = useState(0);
   const agentRef = useRef<Agent | null>(null);
 
+  // 输入历史：纯用户输入（不含 slash 命令），最旧 → 最新 push 到末尾
+  // historyIndex: -1=未导航；0=最新；len-1=最旧
+  const inputHistoryRef = useRef<string[]>(extractUserInputs(initialMessages ?? []));
+  const historyIndexRef = useRef<number>(-1);
+  const savedDraftRef = useRef<string>("");
+
   const slash = useMemo(() => {
     const r = new SlashRegistry();
     r.registerAll(BUILTIN_SLASH_COMMANDS);
@@ -174,6 +181,17 @@ export function App({
     if (autocompleteIndex >= len) setAutocompleteIndex(0);
   }, [autocomplete, autocompleteIndex]);
 
+  const [memoryIndex, setMemoryIndex] = useState<string>("");
+  useEffect(() => {
+    let cancelled = false;
+    loadMemoryIndex(cwd).then((idx) => {
+      if (!cancelled) setMemoryIndex(idx);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cwd]);
+
   useEffect(() => {
     const systemPrompt = buildSystemPrompt({
       cwd,
@@ -181,6 +199,7 @@ export function App({
       provider: llm.providerName,
       lang,
       toolNames: tools.list().map((t) => t.name),
+      memoryIndex,
     });
 
     const agent = new Agent({
@@ -206,14 +225,14 @@ export function App({
           dispatch({ type: "set_status", status: "idle" });
         },
         onPermissionRequest: (toolName, args, summary) =>
-          new Promise<boolean>((resolve) => {
+          new Promise<PermissionDecision>((resolve) => {
             setPending({ toolName, args, summary, resolve });
           }),
       },
     });
     agent.setMessages(messagesRef.current);
     agentRef.current = agent;
-  }, [llm, tools, permissions, session, cwd, lang]);
+  }, [llm, tools, permissions, session, cwd, lang, memoryIndex]);
 
   // 键盘：Ctrl+C 全局退出 + Shift+Tab 循环切 permission mode + autocomplete ↑↓ Tab Esc 导航
   useInput(
@@ -227,17 +246,36 @@ export function App({
         setMode(next);
         return;
       }
-      if (!autocomplete || autocomplete.matches.length === 0) return;
-      const len = autocomplete.matches.length;
-      if (key.upArrow) {
-        setAutocompleteIndex((i) => (i - 1 + len) % len);
+      if (autocomplete && autocomplete.matches.length > 0) {
+        const len = autocomplete.matches.length;
+        if (key.upArrow) {
+          setAutocompleteIndex((i) => (i - 1 + len) % len);
+        } else if (key.downArrow) {
+          setAutocompleteIndex((i) => (i + 1) % len);
+        } else if (key.tab) {
+          const picked = autocomplete.matches[autocompleteIndex];
+          if (picked) commitInput(`/${picked.name}`);
+        } else if (key.escape) {
+          commitInput("");
+        }
+        return;
+      }
+
+      // autocomplete 关闭时：↑/↓ 翻输入历史
+      const hist = inputHistoryRef.current;
+      if (key.upArrow && hist.length > 0) {
+        const cur = historyIndexRef.current;
+        if (cur === -1) savedDraftRef.current = input;
+        const next = Math.min(cur + 1, hist.length - 1);
+        historyIndexRef.current = next;
+        commitInput(hist[hist.length - 1 - next] ?? "");
       } else if (key.downArrow) {
-        setAutocompleteIndex((i) => (i + 1) % len);
-      } else if (key.tab) {
-        const picked = autocomplete.matches[autocompleteIndex];
-        if (picked) commitInput(`/${picked.name}`);
-      } else if (key.escape) {
-        commitInput("");
+        const cur = historyIndexRef.current;
+        if (cur === -1) return;
+        const next = cur - 1;
+        historyIndexRef.current = next;
+        if (next === -1) commitInput(savedDraftRef.current);
+        else commitInput(hist[hist.length - 1 - next] ?? "");
       }
     },
     { isActive: state.status === "idle" && !pending && !picker && !sessionPicker },
@@ -270,6 +308,11 @@ export function App({
         setLLM(next);
         await persistActiveModel(modelId);
       },
+      getMode: () => permissions.getMode(),
+      setMode: (m) => {
+        permissions.setMode(m);
+        setMode(m);
+      },
       reloadSettings: async () => {
         const { settings: nextSettings, sources } = await loadSettings(cwd);
         const { registry: nextModels } = await loadModelsRegistry();
@@ -301,7 +344,7 @@ export function App({
         return { settings: nextSettings, sources };
       },
     }),
-    [cwd, modelsRegistry, llm.model],
+    [cwd, modelsRegistry, llm.model, permissions],
   );
 
   const handleSubmit = useCallback(
@@ -358,6 +401,13 @@ export function App({
       }
 
       commitInput("");
+      // 推入历史（去重相邻重复），重置游标
+      const hist = inputHistoryRef.current;
+      if (hist[hist.length - 1] !== trimmed) hist.push(trimmed);
+      if (hist.length > 200) hist.shift();
+      historyIndexRef.current = -1;
+      savedDraftRef.current = "";
+
       dispatch({ type: "user_submit" });
       try {
         await agentRef.current?.runTurn(trimmed);
@@ -411,8 +461,8 @@ export function App({
         <PermissionPrompt
           request={{
             ...pending,
-            resolve: (ok) => {
-              pending.resolve(ok);
+            resolve: (decision) => {
+              pending.resolve(decision);
               setPending(null);
             },
           }}
@@ -466,6 +516,24 @@ export function App({
       </Box>
     </Box>
   );
+}
+
+function extractUserInputs(messages: Message[]): string[] {
+  const out: string[] = [];
+  for (const m of messages) {
+    if (m.role !== "user") continue;
+    const text =
+      typeof m.content === "string"
+        ? m.content
+        : m.content
+            .filter((p): p is { type: "text"; text: string } => p.type === "text")
+            .map((p) => p.text)
+            .join("\n");
+    // 跳过 /compact 注入的 "[Previous conversation summary]" 等系统消息
+    if (text.startsWith("[Previous conversation summary]")) continue;
+    if (text.trim()) out.push(text);
+  }
+  return out;
 }
 
 function shortCwd(cwd: string): string {

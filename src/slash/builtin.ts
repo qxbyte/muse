@@ -15,6 +15,7 @@ import { getMCPStatus } from "../mcp/index.js";
 import { Session } from "../session/jsonl.js";
 import { loadModelsRegistry, visibleEntries, type LoadError } from "../config/models.js";
 import { shortPath, formatList, parseArgs, formatTime } from "./_format.js";
+import { MODE_CYCLE, MODE_LABEL, type PermissionMode } from "../permission/index.js";
 
 // ----- /help -----
 
@@ -343,6 +344,48 @@ async function loadAndReport(
   };
 }
 
+// ----- /mode -----
+
+const MODE_ALIASES: Record<string, PermissionMode> = {
+  default: "default",
+  normal: "default",
+  acceptedits: "acceptEdits",
+  "accept-edits": "acceptEdits",
+  accept: "acceptEdits",
+  edits: "acceptEdits",
+  plan: "plan",
+  bypass: "bypassPermissions",
+  bypasspermissions: "bypassPermissions",
+};
+
+const MODE_CMD: SlashCommand = {
+  name: "mode",
+  description: "show or switch the permission mode (alternative to Shift+Tab)",
+  argsHint: "[default|acceptEdits|plan|bypassPermissions]",
+  execute(ctx) {
+    const arg = ctx.args.trim().toLowerCase();
+    if (!arg) {
+      const cur = ctx.actions.getMode();
+      const lines = [`Current permission mode: ${cur} — ${MODE_LABEL[cur]}`, ``, `Available modes:`];
+      for (const m of MODE_CYCLE) {
+        const marker = m === cur ? "●" : " ";
+        lines.push(`  ${marker} ${m.padEnd(20)} ${MODE_LABEL[m]}`);
+      }
+      lines.push(``, `Switch: /mode <name>   or   Shift+Tab to cycle`);
+      return { display: lines.join("\n") };
+    }
+    const target = MODE_ALIASES[arg];
+    if (!target) {
+      return {
+        display: `Unknown mode "${ctx.args.trim()}". Valid: ${MODE_CYCLE.join(" | ")}`,
+      };
+    }
+    if (target === ctx.actions.getMode()) return { display: `Already in ${target} mode.` };
+    ctx.actions.setMode(target);
+    return { display: `Switched to ${target} — ${MODE_LABEL[target]}` };
+  },
+};
+
 // ----- registry -----
 
 export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
@@ -352,6 +395,7 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   MODELS,
   CONFIG,
   MCP,
+  MODE_CMD,
   COST,
   RESUME,
   QUIT,
