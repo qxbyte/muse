@@ -206,6 +206,7 @@ export class Agent {
       toolUseId: id,
       content,
       isError,
+      toolName: name,
     };
     this.messages.push(toolMsg);
     this.ctx.session.append({ type: "message", time: new Date().toISOString(), message: toolMsg });

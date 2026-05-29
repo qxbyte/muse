@@ -5,8 +5,9 @@ import { EditTool } from "./edit.js";
 import { BashTool } from "./bash.js";
 import { GrepTool } from "./grep.js";
 import { GlobTool } from "./glob.js";
+import { TodoWriteTool } from "./todo.js";
 
-export { ReadTool, WriteTool, EditTool, BashTool, GrepTool, GlobTool };
+export { ReadTool, WriteTool, EditTool, BashTool, GrepTool, GlobTool, TodoWriteTool };
 
 export const BUILTIN_TOOLS: AnyTool[] = [
   ReadTool,
@@ -15,4 +16,5 @@ export const BUILTIN_TOOLS: AnyTool[] = [
   BashTool,
   GrepTool,
   GlobTool,
+  TodoWriteTool,
 ];

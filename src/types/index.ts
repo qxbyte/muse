@@ -48,6 +48,8 @@ export interface ToolMessage {
   toolUseId: string;
   content: string;
   isError?: boolean;
+  /** 产生该结果的工具名；UI 据此做工具专属渲染（如 TodoWrite 隐藏结果行）。 */
+  toolName?: string;
 }
 
 export type Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage;
