@@ -30,7 +30,7 @@ export function PermissionModeBar({ mode, compact }: { mode: PermissionMode; com
 
   return (
     <Box flexDirection="row">
-      <Text color={color} bold={isBypass}>{"▶▶ "}{label}</Text>
+      <Text color={color} bold={isBypass}>{"▸▸ "}{label}</Text>
       <Text dimColor>{" (shift+tab to cycle)"}</Text>
     </Box>
   );

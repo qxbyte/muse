@@ -1,75 +1,19 @@
 /**
  * 处理中的状态行（流式 / 工具执行期间常驻底部）。
  *
- * 样式（对齐 Claude Code）：
- *   ✱ <Verb>… (<elapsed>s · ↑ <tokens> tokens · thought for <Ns>)
+ * 两行设计：
+ *   ●  Working… ✨闪烁    (12s · ↑ 1.2k tokens · thought for 4s)
+ *      ↳ Read(src/foo.ts)            ← 仅 runningTool != null 时出现
  *
- * 字段：
- * - ✱ 红色 star spinner（自动旋转）
- * - <Verb>：runningTool 时显示 "Running <ToolName>"，否则按 elapsedSec / 4 在 verb 池里轮换
- * - elapsed：本轮开始至今的秒数
- * - ↑ tokens：本轮已累计的 input tokens（usage 事件没回灌时省略此字段）
- * - thought for：从本轮开始到首个 text-delta 的时长；首字符流出后即冻结显示
- *
+ * 主线（Working）始终在跑，扫光动画提示 "活着"。工具行作为子线路按需呈现。
  * 不接收 status 字段——调用方根据 status !== "idle" 决定是否挂载本组件。
  */
 
 import React, { useEffect, useState } from "react";
 import { Box, Text } from "ink";
-import Spinner from "ink-spinner";
-
-const VERBS_EN = [
-  "Thinking",
-  "Pondering",
-  "Musing",
-  "Brewing",
-  "Reasoning",
-  "Cogitating",
-  "Synthesizing",
-  "Composing",
-  "Crunching",
-  "Distilling",
-  "Forging",
-  "Weaving",
-  "Polishing",
-  "Drafting",
-  "Sketching",
-  "Deliberating",
-  "Reflecting",
-  "Conjuring",
-  "Hatching",
-  "Whirring",
-  "Computing",
-  "Plotting",
-  "Spinning",
-  "Cooking",
-];
-
-const VERBS_ZH = [
-  "思考",
-  "推敲",
-  "酝酿",
-  "梳理",
-  "雕琢",
-  "斟酌",
-  "构思",
-  "运算",
-  "锤炼",
-  "盘算",
-  "捋思路",
-  "整理",
-  "琢磨",
-  "推演",
-  "勾画",
-  "捏合",
-  "拼装",
-  "打磨",
-  "编织",
-  "翻找",
-];
+import { Shimmer } from "./Shimmer.js";
 
 const TICK_MS = 400;
-const VERB_ROTATE_SEC = 4;
 
 export interface StatusLineProps {
   /** 本轮开始时间（user_submit 触发时 Date.now()）。 */
@@ -78,9 +22,9 @@ export interface StatusLineProps {
   firstTextTime: number | null;
   /** 本轮已累计的 input tokens（usage 事件累加，>0 才显示）。 */
   inputTokens: number;
-  /** 工具运行中时的工具名，null 表示不在跑工具（显示 verb 池内容）。 */
+  /** 工具运行中时的工具名，null 表示不在跑工具。 */
   runningTool: string | null;
-  /** UI 语言：影响 verb 池与字段标签。 */
+  /** UI 语言：影响标签文案。 */
   lang: "en" | "zh-CN";
 }
 
@@ -92,16 +36,11 @@ export function StatusLine({ startTime, firstTextTime, inputTokens, runningTool,
   }, []);
 
   const elapsedSec = Math.max(0, Math.floor((now - startTime) / 1000));
-  const verbs = lang === "zh-CN" ? VERBS_ZH : VERBS_EN;
-  const verbBase = runningTool
-    ? lang === "zh-CN"
-      ? `运行 ${runningTool}`
-      : `Running ${runningTool}`
-    : verbs[Math.floor(elapsedSec / VERB_ROTATE_SEC) % verbs.length];
+  const mainLabel = lang === "zh-CN" ? "工作中" : "Working";
 
-  const parts: string[] = [`${formatDuration(elapsedSec)}`];
+  const parts: string[] = [formatDuration(elapsedSec)];
   if (inputTokens > 0) {
-    parts.push(lang === "zh-CN" ? `↑ ${formatTokens(inputTokens)} tokens` : `↑ ${formatTokens(inputTokens)} tokens`);
+    parts.push(`↑ ${formatTokens(inputTokens)} tokens`);
   }
   if (firstTextTime !== null) {
     const thinkSec = Math.max(0, Math.floor((firstTextTime - startTime) / 1000));
@@ -111,12 +50,18 @@ export function StatusLine({ startTime, firstTextTime, inputTokens, runningTool,
   }
 
   return (
-    <Box flexDirection="row" marginTop={1}>
-      <Text color="red">
-        <Spinner type="star" />
-      </Text>
-      <Text color="cyan">{` ${verbBase}…`}</Text>
-      <Text dimColor>{` (${parts.join(" · ")})`}</Text>
+    <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="row">
+        <Text color="gray">● </Text>
+        <Shimmer text={mainLabel} />
+        <Text dimColor>{`  (${parts.join(" · ")})`}</Text>
+      </Box>
+      {runningTool && (
+        <Box flexDirection="row" marginLeft={2} marginTop={0}>
+          <Text dimColor>{"↳ "}</Text>
+          <Text color="cyan">{runningTool}</Text>
+        </Box>
+      )}
     </Box>
   );
 }

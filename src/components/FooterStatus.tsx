@@ -82,7 +82,7 @@ export function FooterStatus({
     return (
       <Box flexDirection="row">
         <Text dimColor>{`@${sid}`}</Text>
-        <Text dimColor>{"  │  "}</Text>
+        <Text dimColor>{" | "}</Text>
         <Text dimColor bold>{model}</Text>
         {hasCtx && (
           <>
@@ -103,7 +103,7 @@ export function FooterStatus({
   return (
     <Box flexDirection="row">
       <Text dimColor>{`@${sid}`}</Text>
-      <Text dimColor>{"  │  "}</Text>
+      <Text dimColor>{" | "}</Text>
       <Text dimColor bold>{model}</Text>
       {hasCtx && (
         <>
@@ -113,7 +113,7 @@ export function FooterStatus({
           <Text dimColor>{`  ${formatTokens(lastInputTokens)}/${formatTokens(contextWindow)}`}</Text>
         </>
       )}
-      <Text dimColor>{"  │  "}</Text>
+      <Text dimColor>{" | "}</Text>
       <Text dimColor>{`↑${formatTokens(sessionInputTokens)} ↓${formatTokens(sessionOutputTokens)}`}</Text>
     </Box>
   );
