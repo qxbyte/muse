@@ -20,6 +20,7 @@ import { ModelSelector, type ModelPickerRequest } from "./components/ModelSelect
 import { SessionSelector, type SessionPickerRequest } from "./components/SessionSelector.js";
 import { SlashAutocomplete } from "./components/SlashAutocomplete.js";
 import { PermissionModeBar } from "./components/PermissionModeBar.js";
+import { FooterStatus } from "./components/FooterStatus.js";
 import { ProgressBanner, type ProgressState } from "./components/ProgressBanner.js";
 import { StatusLine } from "./components/StatusLine.js";
 import { DOT } from "./components/MessageView.js";
@@ -619,7 +620,7 @@ export function App({
         <Box flexDirection="column">
           <Box
             marginTop={1}
-            borderStyle="single"
+            borderStyle="bold"
             borderColor={state.status === "idle" ? "gray" : "yellow"}
             borderLeft={false}
             borderRight={false}
@@ -656,8 +657,17 @@ export function App({
         />
       )}
       {progress && <ProgressBanner state={progress} />}
-      <Box marginTop={1}>
+      <Box marginTop={1} flexDirection="column">
         <PermissionModeBar mode={mode} compact={termWidth < 60} />
+        <FooterStatus
+          sessionId={session.meta.id}
+          model={llm.model}
+          contextWindow={llm.capabilities.maxContextWindow}
+          lastInputTokens={state.turnInputTokens}
+          sessionInputTokens={state.inputTokens}
+          sessionOutputTokens={state.outputTokens}
+          termWidth={termWidth}
+        />
       </Box>
     </Box>
   );
