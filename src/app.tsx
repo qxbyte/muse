@@ -658,7 +658,6 @@ export function App({
       )}
       {progress && <ProgressBanner state={progress} />}
       <Box marginTop={1} flexDirection="column">
-        <PermissionModeBar mode={mode} compact={termWidth < 60} />
         <FooterStatus
           sessionId={session.meta.id}
           model={llm.model}
@@ -668,6 +667,7 @@ export function App({
           sessionOutputTokens={state.outputTokens}
           termWidth={termWidth}
         />
+        <PermissionModeBar mode={mode} compact={termWidth < 60} />
       </Box>
     </Box>
   );
