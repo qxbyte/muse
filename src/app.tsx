@@ -665,7 +665,7 @@ export function App({
           )}
         </Box>
       )}
-      <Box marginTop={1} flexDirection="column">
+      <Box flexDirection="column">
         <FooterStatus
           sessionId={session.meta.id}
           model={llm.model}
