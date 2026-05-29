@@ -64,11 +64,20 @@ export function FooterStatus({
   const SEP = <Text dimColor>{" │ "}</Text>;
   const SEP_DOT = <Text dimColor>{" · "}</Text>;
 
+  // 已填部分按阈值上色，未填部分恒 dim gray；0% 时整条灰
+  const renderBar = (barW: number): React.ReactNode => {
+    const filled = Math.round((pct / 100) * barW);
+    const empty = barW - filled;
+    return (
+      <>
+        {filled > 0 && <Text color={ctxColor}>{"█".repeat(filled)}</Text>}
+        {empty > 0 && <Text dimColor>{"░".repeat(empty)}</Text>}
+      </>
+    );
+  };
+
   // <60: 极简
   if (termWidth < 60) {
-    const barW = BAR_TOTAL_COMPACT;
-    const filled = Math.round((pct / 100) * barW);
-    const bar = "█".repeat(filled) + "░".repeat(barW - filled);
     return (
       <Box flexDirection="row">
         <Text color="cyan" bold>{sid}</Text>
@@ -77,7 +86,7 @@ export function FooterStatus({
         {hasCtx && (
           <>
             {SEP_DOT}
-            <Text color={ctxColor}>{bar}</Text>
+            {renderBar(BAR_TOTAL_COMPACT)}
             <Text dimColor>{` ${pct}%`}</Text>
           </>
         )}
@@ -87,9 +96,6 @@ export function FooterStatus({
 
   // 60–100: 精简（无累计 token、无 in/max 绝对值）
   if (termWidth < 100) {
-    const barW = BAR_TOTAL_COMPACT;
-    const filled = Math.round((pct / 100) * barW);
-    const bar = "█".repeat(filled) + "░".repeat(barW - filled);
     return (
       <Box flexDirection="row">
         <Text color="cyan" bold>{`@${sid}`}</Text>
@@ -99,7 +105,7 @@ export function FooterStatus({
           <>
             {SEP}
             <Text>{"ctx: "}</Text>
-            <Text color={ctxColor}>{bar}</Text>
+            {renderBar(BAR_TOTAL_COMPACT)}
             <Text dimColor>{` ${pct}%`}</Text>
           </>
         )}
@@ -108,10 +114,6 @@ export function FooterStatus({
   }
 
   // ≥100: 完整
-  const barW = BAR_TOTAL_WIDE;
-  const filled = Math.round((pct / 100) * barW);
-  const bar = "█".repeat(filled) + "░".repeat(barW - filled);
-
   return (
     <Box flexDirection="row">
       <Text color="cyan" bold>{`@${sid}`}</Text>
@@ -121,7 +123,7 @@ export function FooterStatus({
         <>
           {SEP}
           <Text>{"ctx: "}</Text>
-          <Text color={ctxColor}>{bar}</Text>
+          {renderBar(BAR_TOTAL_WIDE)}
           <Text dimColor>{` ${pct}%`}</Text>
           <Text dimColor>{`  ${formatTokens(lastInputTokens)}/${formatTokens(contextWindow)}`}</Text>
         </>
