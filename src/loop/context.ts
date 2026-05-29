@@ -24,6 +24,8 @@ export interface CompactOptions {
   /** 保留最近 N 条原始消息不压缩。默认 4。 */
   keepRecent?: number;
   abortSignal?: AbortSignal;
+  /** LLM 摘要流式过程中的字符进度回调（每个 text-delta 触发，传累计字符数）。 */
+  onProgress?: (charsReceived: number) => void;
 }
 
 export interface CompactResult {
@@ -54,7 +56,7 @@ export async function compactMessages(
 
   const older = messages.slice(0, cutoff);
   const recent = messages.slice(cutoff);
-  const summary = await summarizeConversation(older, opts.llm, opts.abortSignal);
+  const summary = await summarizeConversation(older, opts.llm, opts.abortSignal, opts.onProgress);
 
   const summaryMessage: Message = {
     role: "user",
@@ -115,6 +117,7 @@ async function summarizeConversation(
   older: Message[],
   llm: LLMClient,
   abortSignal?: AbortSignal,
+  onProgress?: (chars: number) => void,
 ): Promise<string> {
   const transcript = renderTranscript(older);
   const prompt: Message[] = [
@@ -133,8 +136,10 @@ async function summarizeConversation(
 
   let text = "";
   for await (const ev of llm.stream({ messages: prompt, abortSignal })) {
-    if (ev.type === "text") text += ev.delta;
-    else if (ev.type === "error") throw ev.error;
+    if (ev.type === "text") {
+      text += ev.delta;
+      onProgress?.(text.length);
+    } else if (ev.type === "error") throw ev.error;
   }
   return text.trim() || "(empty summary)";
 }

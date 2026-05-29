@@ -20,6 +20,7 @@ import { ModelSelector, type ModelPickerRequest } from "./components/ModelSelect
 import { SessionSelector, type SessionPickerRequest } from "./components/SessionSelector.js";
 import { SlashAutocomplete } from "./components/SlashAutocomplete.js";
 import { PermissionModeBar } from "./components/PermissionModeBar.js";
+import { ProgressBanner, type ProgressState } from "./components/ProgressBanner.js";
 import type { LLMClient } from "./llm/types.js";
 import { createLLMClient, createLLMClientFromModelEntry, setActiveModelEnv } from "./llm/client.js";
 import type { ToolRegistry } from "./tools/registry.js";
@@ -144,6 +145,7 @@ export function App({
   const [picker, setPicker] = useState<ModelPickerRequest | null>(null);
   const [sessionPicker, setSessionPicker] = useState<SessionPickerRequest | null>(null);
   const [autocompleteIndex, setAutocompleteIndex] = useState(0);
+  const [progress, setProgress] = useState<ProgressState | null>(null);
   const agentRef = useRef<Agent | null>(null);
 
   // 输入历史：纯用户输入（不含 slash 命令），最旧 → 最新 push 到末尾
@@ -313,6 +315,15 @@ export function App({
         permissions.setMode(m);
         setMode(m);
       },
+      showProgress: (opts) => {
+        setProgress({
+          title: opts.title,
+          tips: opts.tips ?? [],
+          getPercent: opts.getPercent ?? (() => 0),
+          startTime: Date.now(),
+        });
+      },
+      hideProgress: () => setProgress(null),
       reloadSettings: async () => {
         const { settings: nextSettings, sources } = await loadSettings(cwd);
         const { registry: nextModels } = await loadModelsRegistry();
@@ -511,6 +522,7 @@ export function App({
           <Text dimColor>... (running tool)</Text>
         </Box>
       )}
+      {progress && <ProgressBanner state={progress} />}
       <Box marginTop={1}>
         <PermissionModeBar mode={mode} compact={termWidth < 60} />
       </Box>

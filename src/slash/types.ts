@@ -43,6 +43,10 @@ export interface SlashActions {
   getMode(): PermissionMode;
   /** 切换 PermissionMode（用于 /mode <name>）。 */
   setMode(mode: PermissionMode): void;
+  /** 显示进度横幅（命令开始长任务时调）。getPercent 由命令侧持有可变 ref。 */
+  showProgress(opts: { title: string; tips?: string[]; getPercent?: () => number }): void;
+  /** 隐藏进度横幅（命令结束 finally 调）。 */
+  hideProgress(): void;
 }
 
 export interface SlashCommandContext {

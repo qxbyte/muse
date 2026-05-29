@@ -94,6 +94,21 @@ const COST: SlashCommand = {
 
 // ----- /compact -----
 
+const COMPACT_TIPS = [
+  "Shift+Tab cycles permission modes (default / acceptEdits / plan / bypass)",
+  "/mode plan drafts changes without executing them",
+  "/cost shows token usage and estimated spend",
+  "/resume picks up a previous session in this directory",
+  "muse --continue resumes the last session on startup",
+  "MemoryWrite saves persistent knowledge across sessions",
+  "TodoWrite keeps the model honest on multi-step tasks",
+  "Pipe to muse: cat bug.log | muse \"explain this\"",
+  "Ctrl+C exits immediately; Esc rejects a pending tool",
+];
+
+// 经验值：muse-design §5.3 提的 200-400 词摘要约 1.2-1.8k 字符
+const COMPACT_ESTIMATED_CHARS = 1800;
+
 const COMPACT: SlashCommand = {
   name: "compact",
   description: "summarize older messages to free up context space",
@@ -104,17 +119,35 @@ const COMPACT: SlashCommand = {
     const keepRecent = typeof flags.keep === "string" ? Math.max(1, parseInt(flags.keep, 10)) : 4;
     if (Number.isNaN(keepRecent)) return { display: `Invalid --keep value: ${flags.keep}` };
 
-    const result = await compactMessages(ctx.history, { llm: ctx.llm, keepRecent });
-    if (result.noop) {
-      return { display: `(history has ${result.originalCount} messages; not enough to compact with --keep ${keepRecent})` };
+    // ProgressBanner 每 tick 调 getPercent；用闭包持有的 ref 让 banner 看到最新值
+    const progressRef = { chars: 0 };
+    ctx.actions.showProgress({
+      title: "Compacting conversation",
+      tips: COMPACT_TIPS,
+      getPercent: () => (progressRef.chars / COMPACT_ESTIMATED_CHARS) * 100,
+    });
+
+    try {
+      const result = await compactMessages(ctx.history, {
+        llm: ctx.llm,
+        keepRecent,
+        onProgress: (chars) => {
+          progressRef.chars = chars;
+        },
+      });
+      if (result.noop) {
+        return { display: `(history has ${result.originalCount} messages; not enough to compact with --keep ${keepRecent})` };
+      }
+      ctx.actions.setMessages(result.newMessages);
+      const preview = result.summary.length > 240 ? result.summary.slice(0, 240) + "…" : result.summary;
+      return {
+        display:
+          `Compacted ${result.originalCount} → ${result.newCount} messages ` +
+          `(kept last ${keepRecent}).\n\nSummary:\n${preview}`,
+      };
+    } finally {
+      ctx.actions.hideProgress();
     }
-    ctx.actions.setMessages(result.newMessages);
-    const preview = result.summary.length > 240 ? result.summary.slice(0, 240) + "…" : result.summary;
-    return {
-      display:
-        `Compacted ${result.originalCount} → ${result.newCount} messages ` +
-        `(kept last ${keepRecent}).\n\nSummary:\n${preview}`,
-    };
   },
 };
 
