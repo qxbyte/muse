@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import TextInput from "ink-text-input";
+import Spinner from "ink-spinner";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -62,6 +63,8 @@ interface UIState {
   history: Message[];
   streamingText: string;
   status: "idle" | "streaming" | "tool";
+  /** 当前正在跑的工具名（onToolCallStart 设置；下一次 stream_delta 或 turn_end 清空）。 */
+  runningTool: string | null;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -73,20 +76,33 @@ type UIAction =
   | { type: "stream_delta"; delta: string }
   | { type: "stream_reset" }
   | { type: "set_status"; status: UIState["status"] }
+  | { type: "tool_start"; name: string }
   | { type: "add_usage"; usage: TokenUsage };
 
 function reducer(state: UIState, action: UIAction): UIState {
   switch (action.type) {
     case "user_submit":
-      return { ...state, streamingText: "", status: "streaming" };
+      return { ...state, streamingText: "", status: "streaming", runningTool: null };
     case "history_set":
       return { ...state, history: action.messages };
     case "stream_delta":
-      return { ...state, streamingText: state.streamingText + action.delta };
+      // 文本流出意味着 LLM 在思考 / 回话——若刚才在 tool 阶段，自然过渡为 streaming
+      return {
+        ...state,
+        streamingText: state.streamingText + action.delta,
+        status: state.status === "tool" ? "streaming" : state.status,
+        runningTool: null,
+      };
     case "stream_reset":
       return { ...state, streamingText: "" };
     case "set_status":
-      return { ...state, status: action.status };
+      return {
+        ...state,
+        status: action.status,
+        runningTool: action.status === "tool" ? state.runningTool : null,
+      };
+    case "tool_start":
+      return { ...state, status: "tool", runningTool: action.name };
     case "add_usage":
       return {
         ...state,
@@ -125,6 +141,7 @@ export function App({
     history: initialMessages ?? [],
     streamingText: "",
     status: "idle",
+    runningTool: null,
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
@@ -214,7 +231,8 @@ export function App({
       systemPrompt,
       events: {
         onText: (delta) => dispatch({ type: "stream_delta", delta }),
-        onToolCallStart: () => dispatch({ type: "set_status", status: "tool" }),
+        onToolCallStart: (_id, name) => dispatch({ type: "tool_start", name }),
+        onToolResult: () => dispatch({ type: "set_status", status: "streaming" }),
         onUsage: (usage: TokenUsage) => dispatch({ type: "add_usage", usage }),
         onTurnEnd: () => {
           const msgs = [...agent.getMessages()];
@@ -507,23 +525,35 @@ export function App({
       )}
       {acceptingInput && (
         <Box flexDirection="column">
-          <Box marginTop={1}>
+          <Box
+            marginTop={1}
+            borderStyle="round"
+            borderColor="gray"
+            paddingX={1}
+            flexDirection="row"
+          >
             <Text color="cyan">{"> "}</Text>
-            <TextInput key={inputRemountKey} value={input} onChange={setInput} onSubmit={handleSubmit} />
+            <Box flexGrow={1}>
+              <TextInput key={inputRemountKey} value={input} onChange={setInput} onSubmit={handleSubmit} />
+            </Box>
           </Box>
           {autocomplete && autocomplete.matches.length > 0 && (
             <SlashAutocomplete matches={autocomplete.matches} index={autocompleteIndex} />
           )}
         </Box>
       )}
-      {state.status === "streaming" && (
-        <Box marginTop={1}>
-          <Text dimColor>... (streaming)</Text>
+      {state.status === "tool" && state.runningTool && (
+        <Box flexDirection="row" marginTop={1}>
+          <Text color="yellow"><Spinner type="dots" /></Text>
+          <Text dimColor>{" Running "}</Text>
+          <Text color="yellow" bold>{state.runningTool}</Text>
+          <Text dimColor>{"..."}</Text>
         </Box>
       )}
-      {state.status === "tool" && (
-        <Box marginTop={1}>
-          <Text dimColor>... (running tool)</Text>
+      {state.status === "streaming" && !state.streamingText && (
+        <Box flexDirection="row" marginTop={1}>
+          <Text color="cyan"><Spinner type="dots" /></Text>
+          <Text dimColor>{" Thinking..."}</Text>
         </Box>
       )}
       {progress && <ProgressBanner state={progress} />}
