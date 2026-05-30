@@ -18,8 +18,7 @@ import { buildSystemPrompt } from "./loop/system-prompt.js";
 import { loadMemoryIndex } from "./loop/memory.js";
 import { MuseError } from "./types/index.js";
 import { log } from "./log/index.js";
-
-const VERSION = "0.1.0";
+import { VERSION } from "./version.js";
 
 async function main() {
   const program = new Command();

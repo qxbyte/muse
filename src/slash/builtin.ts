@@ -151,10 +151,10 @@ const COMPACT: SlashCommand = {
   },
 };
 
-// ----- /models -----
+// ----- /model -----
 
 const MODELS: SlashCommand = {
-  name: "models",
+  name: "model",
   description: "pick a model from ~/.muse/models.local.json (↑↓ to navigate)",
   async execute(ctx) {
     // ctx 没拿到 registry 时同步重读一次：可能 muse 启动后用户改了文件
@@ -202,7 +202,7 @@ function renderLoadErrors(errors: LoadError[]): string {
     ``,
     ...errors.flatMap((e) => [`  ${shortPath(e.path)}`, `    ${e.message}`]),
     ``,
-    `Fix the file above, then run /models again (it re-reads on each call).`,
+    `Fix the file above, then run /model again (it re-reads on each call).`,
     `Hint: each entry needs "id" and "baseUrl" (or "url"); "apiKey" supports \${ENV_VAR}.`,
   ].join("\n");
 }
@@ -225,7 +225,7 @@ function renderEmptyRegistryHint(): string {
     `  "availableModels": ["<your-model-id>"]`,
     `}`,
     ``,
-    `Then run /models again (no restart needed).`,
+    `Then run /model again (no restart needed).`,
   ].join("\n");
 }
 

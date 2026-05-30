@@ -2,7 +2,7 @@
  * Ink 根组件：banner + 消息历史 + 输入框 + 流式响应 + slash 命令调度。
  *
  * SlashActions 在这里注入。LLM client / settings / modelsRegistry 都是 mutable state，
- * /models /config reload 通过 setLLM / setSettings / setModelsRegistry 触发 Agent 重建，
+ * /model /config reload 通过 setLLM / setSettings / setModelsRegistry 触发 Agent 重建，
  * messages 通过 messagesRef 跨重建保留。
  */
 
@@ -36,6 +36,7 @@ import { Agent } from "./loop/agent.js";
 import { buildSystemPrompt } from "./loop/system-prompt.js";
 import { loadMemoryIndex } from "./loop/memory.js";
 import { loadSettings } from "./config/index.js";
+import { VERSION } from "./version.js";
 import { loadModelsRegistry, findEntry, type ModelEntry, type ModelsRegistry } from "./config/models.js";
 import type { Message, ToolMessage, TokenUsage } from "./types/index.js";
 import type { Settings } from "./config/types.js";
@@ -623,7 +624,7 @@ export function App({
 
   const banner = !showBanner
     ? null
-    : pickBanner(termWidth, { version: "0.1.0", model: llm.model, cwd: shortCwd(cwd) });
+    : pickBanner(termWidth, { version: VERSION, model: llm.model, cwd: shortCwd(cwd) });
 
   // 配对 tool_use ↔ tool_result：AssistantMessage 把 result 内联渲染在 call 下方（树形）；
   // 顶层 history loop 跳过已被内联的 ToolMessage 避免重复
