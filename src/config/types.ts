@@ -12,7 +12,7 @@ export const ProviderConfigSchema = z.object({
 
 // 新设计：model id 由 ~/.muse/models.local.json 提供，settings.json 只保留 active 选择。
 // provider 字段仅用于"无 models.local.json 时的 fallback 路径"（设计文档 §8 兼容层）。
-// 因此两者都可选——/models 切换只写 model，不写 provider。
+// 因此两者都可选——/model 切换只写 model，不写 provider。
 export const LLMConfigSchema = z.object({
   provider: z.string().optional().describe("Fallback provider preset (only used when no models.local.json entry matches)."),
   model: z.string().optional().describe("Active model id; should match an id in models.local.json."),

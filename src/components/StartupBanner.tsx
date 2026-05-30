@@ -1,35 +1,36 @@
 /**
- * 启动 banner（彩虹 MUSE 字母版，无边框）。
+ * 启动 banner：圆角灰框风格（参照 Codex CLI）。
  *
- * 4 个字母各 5×5 像素，间距 2 字符，logo 总宽 26 字符 × 高 5 行。
- * M 红 / U 橙 / S 黄 / E 绿（彩虹渐变）；✻ 青；v 亮黄；正文白。
- * 无边框，简洁排版，对齐右侧三行信息：✻ Welcome / model / cwd。
+ * 布局：
+ *   ╭──────────────────────────────────────────────╮
+ *   │ >_ Muse (v0.1.3)                            │
+ *   │                                             │
+ *   │ model:     <id>            /model to change │
+ *   │ directory: <cwd>                            │
+ *   ╰─────────────────────────────────────────────╯
+ *
+ * 终端窄于 50 列退化为单行。alignSelf=flex-start 让框 shrink-to-content，
+ * 不被 column 父容器的 stretch 默认值撑满整行。
  */
 
 import React from "react";
 import { Box, Text } from "ink";
 
-// 每个字母 5 行 × 5 字符宽的像素图。S 顶/底完整 █████ 避免拐弯吐出。
-const LETTERS = {
-  M: ["█   █", "██ ██", "█ █ █", "█   █", "█   █"],
-  U: ["█   █", "█   █", "█   █", "█   █", " ███ "],
-  S: ["█████", "█    ", " ███ ", "    █", "█████"],
-  E: ["█████", "█    ", "████ ", "█    ", "█████"],
-} as const;
-
 const COLORS = {
-  M: "#EF4444",
-  U: "#F97316",
-  S: "#EAB308",
-  E: "#22C55E",
-  asterisk: "#06B6D4",
-  text: "white",
-  versionAccent: "#FDE047",
+  border: "gray",
+  prompt: "white",
+  app: "white",
+  version: "gray",
+  label: "white",
+  value: "#5EE3B5",
+  hint: "gray",
 } as const;
 
-const LETTER_GAP = 3; // 字母之间的空格（避免视觉粘连）
-const LOGO_WIDTH = 5 * 4 + LETTER_GAP * 3; // 29
-const GAP_WIDTH = 6; // logo 到右侧文字的间距
+const LABEL_MODEL = "model:";
+const LABEL_DIR = "directory:";
+const LABEL_WIDTH = Math.max(LABEL_MODEL.length, LABEL_DIR.length); // 10
+const LABEL_TO_VALUE_GAP = 1;
+const VALUE_TO_HINT_GAP = 4;
 
 export interface StartupBannerProps {
   version: string;
@@ -37,88 +38,45 @@ export interface StartupBannerProps {
   cwd: string;
 }
 
-function LogoLine({ row }: { row: number }) {
-  // 用 Box marginLeft 显式控制字母间距：yoga flex 不会"吃"空格，比 Text 拼空格稳。
-  return (
-    <Box flexDirection="row">
-      <Box>
-        <Text color={COLORS.M}>{LETTERS.M[row]}</Text>
-      </Box>
-      <Box marginLeft={LETTER_GAP}>
-        <Text color={COLORS.U}>{LETTERS.U[row]}</Text>
-      </Box>
-      <Box marginLeft={LETTER_GAP}>
-        <Text color={COLORS.S}>{LETTERS.S[row]}</Text>
-      </Box>
-      <Box marginLeft={LETTER_GAP}>
-        <Text color={COLORS.E}>{LETTERS.E[row]}</Text>
-      </Box>
-    </Box>
-  );
-}
-
-function BannerLine({ row, children }: { row: number; children?: React.ReactNode }) {
-  return (
-    <Box flexDirection="row">
-      <Box minWidth={LOGO_WIDTH}>
-        <LogoLine row={row} />
-      </Box>
-      <Box width={GAP_WIDTH} />
-      {children ?? null}
-    </Box>
-  );
+function padLabel(label: string): string {
+  return label + " ".repeat(LABEL_WIDTH - label.length + LABEL_TO_VALUE_GAP);
 }
 
 export function StartupBanner({ version, model, cwd }: StartupBannerProps) {
   return (
-    <Box flexDirection="column" paddingY={0}>
-      <BannerLine row={0} />
-      <BannerLine row={1}>
-        <Box flexDirection="row">
-          <Text color={COLORS.asterisk}>✻</Text>
-          <Text color={COLORS.text}>{" Welcome to Muse "}</Text>
-          <Text color={COLORS.versionAccent}>v{version}</Text>
-        </Box>
-      </BannerLine>
-      <BannerLine row={2}>
-        <Text color={COLORS.text}>model: {model}</Text>
-      </BannerLine>
-      <BannerLine row={3}>
-        <Text color={COLORS.text}>cwd:   {cwd}</Text>
-      </BannerLine>
-      <BannerLine row={4} />
-    </Box>
-  );
-}
-
-/** 紧凑模式：终端窄于 60 列时，省略 logo，仅文字。 */
-export function CompactBanner({ version, model, cwd }: StartupBannerProps) {
-  return (
-    <Box flexDirection="column" paddingY={0}>
+    <Box flexDirection="column" alignSelf="flex-start" borderStyle="round" borderColor={COLORS.border} paddingX={1}>
       <Box flexDirection="row">
-        <Text color={COLORS.asterisk}>✻</Text>
-        <Text color={COLORS.text}>{" Welcome to Muse "}</Text>
-        <Text color={COLORS.versionAccent}>v{version}</Text>
+        <Text color={COLORS.prompt} bold>{">_ "}</Text>
+        <Text color={COLORS.app} bold>Muse</Text>
+        <Text color={COLORS.version}>{` (v${version})`}</Text>
       </Box>
-      <Text color={COLORS.text}>model: {model}</Text>
-      <Text color={COLORS.text}>cwd:   {cwd}</Text>
+      <Box height={1} />
+      <Box flexDirection="row">
+        <Text color={COLORS.label}>{padLabel(LABEL_MODEL)}</Text>
+        <Text color={COLORS.value}>{model}</Text>
+        <Text color={COLORS.hint}>{" ".repeat(VALUE_TO_HINT_GAP)}/model to change</Text>
+      </Box>
+      <Box flexDirection="row">
+        <Text color={COLORS.label}>{padLabel(LABEL_DIR)}</Text>
+        <Text color={COLORS.value}>{cwd}</Text>
+      </Box>
     </Box>
   );
 }
 
-/** 单行模式：终端 < 40 列。 */
+/** 窄终端（< 50 列）单行兜底。 */
 export function SingleLineBanner({ version, model }: Omit<StartupBannerProps, "cwd">) {
   return (
     <Text>
-      <Text color={COLORS.text}>Muse </Text>
-      <Text color={COLORS.versionAccent}>v{version}</Text>
-      <Text color={COLORS.text}> · {model}</Text>
+      <Text color={COLORS.app} bold>Muse </Text>
+      <Text color={COLORS.version}>v{version}</Text>
+      <Text color={COLORS.app}>{" · "}</Text>
+      <Text color={COLORS.value}>{model}</Text>
     </Text>
   );
 }
 
 export function pickBanner(width: number, props: StartupBannerProps): React.ReactElement {
-  if (width >= 60) return <StartupBanner {...props} />;
-  if (width >= 40) return <CompactBanner {...props} />;
+  if (width >= 50) return <StartupBanner {...props} />;
   return <SingleLineBanner version={props.version} model={props.model} />;
 }

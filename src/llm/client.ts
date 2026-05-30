@@ -20,7 +20,7 @@ export interface CreateClientOpts {
  * 当前 active model 的 apiKey 注入到此进程 env 字段下。
  *
  * 业务代码（LLM client）只看到 env name，不直接持有 key 副本。
- * /models 切换或启动加载时由 setActiveModelEnv() 写入；从这里读出来给 client。
+ * /model 切换或启动加载时由 setActiveModelEnv() 写入；从这里读出来给 client。
  */
 export const ACTIVE_API_KEY_ENV = "MUSE_ACTIVE_API_KEY";
 

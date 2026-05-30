@@ -1,7 +1,7 @@
 /**
  * 模型选择器：用 Selector 骨架实现，提供 model entry 专用行渲染。
  *
- * 由 /models 命令通过 ctx.actions.pickModel(...) 拉起。
+ * 由 /model 命令通过 ctx.actions.pickModel(...) 拉起。
  * 接口（ModelPickerRequest）保持稳定，便于 app.tsx 不动 actions.pickModel 调用方。
  */
 

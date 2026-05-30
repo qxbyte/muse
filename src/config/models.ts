@@ -4,7 +4,7 @@
  * 位置：~/.muse/models.local.json （单文件，本机本地；从不入 git）
  *
  * 设计：
- * - models 数组的 id 是**用户起的名字**，不在代码里硬编码；availableModels 决定 /models
+ * - models 数组的 id 是**用户起的名字**，不在代码里硬编码；availableModels 决定 /model
  *   selector 里显示哪些
  * - apiKey 字段可以直接写明文（推荐：文件就在本机本地），也支持 ${ENV_VAR} 占位符
  * - baseUrl 是基址，SDK 自己拼 /chat/completions；用户填全 endpoint 时自动剥后缀
@@ -174,7 +174,7 @@ export function findEntry(registry: ModelsRegistry, modelId: string): ModelEntry
   return registry.models.find((m) => m.id === modelId);
 }
 
-/** /models selector 里实际显示的条目（availableModels 缺省 = 全部 id）。 */
+/** /model selector 里实际显示的条目（availableModels 缺省 = 全部 id）。 */
 export function visibleEntries(registry: ModelsRegistry): ModelEntry[] {
   if (!registry.availableModels || registry.availableModels.length === 0) {
     return registry.models;
