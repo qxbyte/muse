@@ -319,6 +319,7 @@ muse --help
 | `/config reload` | 不重启 muse 热加载所有配置 |
 | `/config path` | 列出配置文件路径 |
 | `/compact` | 摘要老消息释放上下文（`--keep N` 保留最近 N 条） |
+| `/btw <question>` | 旁白问答：用当前对话作上下文跑一次无工具 LLM 流，答案在浮层显示且**不**进历史；Enter/Esc/Space 关闭 |
 | `/resume` | ↑↓ 选历史会话加载；带参 `/resume <id-prefix>` 直接加载 |
 | `/mcp` | MCP server 状态 |
 | `/quit` / `/exit` | 退出 |

@@ -19,6 +19,7 @@ import { PermissionPrompt, type PermissionRequest } from "./components/Permissio
 import { ModelSelector, type ModelPickerRequest } from "./components/ModelSelector.js";
 import { SessionSelector, type SessionPickerRequest } from "./components/SessionSelector.js";
 import { QuestionPicker, type QuestionPickerRequest } from "./components/QuestionPicker.js";
+import { BtwOverlay, type BtwRequest } from "./components/BtwOverlay.js";
 import { SlashAutocomplete } from "./components/SlashAutocomplete.js";
 import { PermissionModeBar } from "./components/PermissionModeBar.js";
 import { FooterStatus } from "./components/FooterStatus.js";
@@ -202,6 +203,7 @@ export function App({
   const [picker, setPicker] = useState<ModelPickerRequest | null>(null);
   const [sessionPicker, setSessionPicker] = useState<SessionPickerRequest | null>(null);
   const [questionPicker, setQuestionPicker] = useState<QuestionPickerRequest | null>(null);
+  const [btwRequest, setBtwRequest] = useState<BtwRequest | null>(null);
   const [autocompleteIndex, setAutocompleteIndex] = useState(0);
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const agentRef = useRef<Agent | null>(null);
@@ -417,13 +419,13 @@ export function App({
     },
     // 模型在跑时也要响应键盘（让用户能 Ctrl+C / Shift+Tab / autocomplete 导航）；
     // 仅模态弹起时让出键盘所有权
-    { isActive: !pending && !picker && !sessionPicker && !questionPicker },
+    { isActive: !pending && !picker && !sessionPicker && !questionPicker && !btwRequest },
   );
 
   // 输入框：picker 类模态弹起时仍保持可见但失焦（"Chat about this" 风格），
-  // 真正抢键盘的 PermissionPrompt / ModelSelector / SessionSelector 才完全隐藏
-  const acceptingInput = pending === null && picker === null && sessionPicker === null && questionPicker === null;
-  const inputVisible = pending === null && picker === null && sessionPicker === null;
+  // 真正抢键盘的 PermissionPrompt / ModelSelector / SessionSelector / BtwOverlay 才完全隐藏
+  const acceptingInput = pending === null && picker === null && sessionPicker === null && questionPicker === null && btwRequest === null;
+  const inputVisible = pending === null && picker === null && sessionPicker === null && btwRequest === null;
   const inputPlaceholder = questionPicker ? "Chat about this" : undefined;
 
   const actions: SlashActions = useMemo(
@@ -464,6 +466,11 @@ export function App({
         });
       },
       hideProgress: () => setProgress(null),
+      askBtw: (question) =>
+        new Promise<void>((resolve) => {
+          // history 锁定在 /btw 触发的瞬间——后续即使主对话有新消息，/btw 看到的也是当时的快照
+          setBtwRequest({ question, history: messagesRef.current, resolve });
+        }),
       reloadSettings: async () => {
         const { settings: nextSettings, sources } = await loadSettings(cwd);
         const { registry: nextModels } = await loadModelsRegistry();
@@ -693,6 +700,18 @@ export function App({
               setQuestionPicker(null);
             },
           }}
+        />
+      )}
+      {btwRequest && (
+        <BtwOverlay
+          request={{
+            ...btwRequest,
+            resolve: () => {
+              btwRequest.resolve();
+              setBtwRequest(null);
+            },
+          }}
+          llm={llm}
         />
       )}
       {state.status !== "idle" && (

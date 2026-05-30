@@ -57,7 +57,7 @@ src/cli.tsx                          # commander 解析 argv，加载 settings/m
   - Pattern 格式：`"ToolName"` / `"Bash(<prefix>)"` / `"Bash(<prefix>:*)"`
 - **`src/config/`** — 配置 5 层叠加（defaults → `~/.muse/settings.json` → `<cwd>/.muse/settings.json` → `<cwd>/.muse/settings.local.json` → env → CLI flags）。`${ENV_VAR}` 占位符在加载后展开。`models.local.json` **只有** `~/.muse/` 层（模型仓库本质 user-level），见 `src/config/models.ts`。
 - **`src/session/jsonl.ts`** — append-only JSONL，路径 `~/.muse/projects/<sha256(cwd)[:16]>/sessions/<uuid>.jsonl`。每条事件一行（session_start / message / usage / session_end）。`/resume` 与 `--continue` 从这里恢复。
-- **`src/slash/`** — Slash 命令系统。`builtin.ts` 注册 9 条内置命令；命令体只编排（解析参数 → 调 `SlashActions` / 领域模块 → 返回 `display`），真正业务在领域模块里（如 `loop/context.ts` 的 compact、`config/models.ts` 的 registry 读写）。
+- **`src/slash/`** — Slash 命令系统。`builtin.ts` 注册 10 条内置命令；命令体只编排（解析参数 → 调 `SlashActions` / 领域模块 → 返回 `display`），真正业务在领域模块里（如 `loop/context.ts` 的 compact、`config/models.ts` 的 registry 读写）。返回 `{ display }` 会被追加为 assistant 消息；返回 `{}` 则不入历史（`/btw` 浮层用此机制）。
 - **`src/app.tsx`** — Ink 根组件。`llm` / `settings` / `modelsRegistry` 是 mutable state——`/models` / `/config reload` 通过 setter 触发 **Agent 重建**；`messagesRef` 跨重建保留 messages。permission prompt / model selector / session selector / question picker 都是 modal overlay。
 - **`src/loop/system-prompt.ts`** — 系统提示拼装。注意：`Available tools` 段会把 `ToolRegistry.list()` 当前可见的工具名全部塞进去，所以新增工具自动暴露给 LLM；plan 模式下 Agent 会过滤掉非 read 工具再传给 LLM（不只是拦截执行）。
 

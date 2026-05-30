@@ -419,6 +419,29 @@ const MODE_CMD: SlashCommand = {
   },
 };
 
+// ----- /btw -----
+
+const BTW: SlashCommand = {
+  name: "btw",
+  description: "ask a quick side question (answer in popup, not saved to history)",
+  argsHint: "<question>",
+  async execute(ctx) {
+    const q = ctx.args.trim();
+    if (!q) {
+      return {
+        display:
+          `Usage: /btw <question>\n` +
+          `  One-shot Q&A using the current conversation as context.\n` +
+          `  The Q & A are shown in an overlay and NOT added to history.\n` +
+          `  No tools — the model answers from context + its own knowledge.`,
+      };
+    }
+    // askBtw 在浮层关闭时 resolve；display 返回空 → applySlashResult 不会追加任何 assistant 消息
+    await ctx.actions.askBtw(q);
+    return {};
+  },
+};
+
 // ----- registry -----
 
 export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
@@ -430,6 +453,7 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   MCP,
   MODE_CMD,
   COST,
+  BTW,
   RESUME,
   QUIT,
 ];

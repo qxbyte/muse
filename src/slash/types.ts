@@ -47,6 +47,11 @@ export interface SlashActions {
   showProgress(opts: { title: string; tips?: string[]; getPercent?: () => number }): void;
   /** 隐藏进度横幅（命令结束 finally 调）。 */
   hideProgress(): void;
+  /**
+   * /btw 旁白问答：拉起浮层跑一次无工具 LLM 流，Q & A 都不进 messages。
+   * resolve 在用户关闭浮层时调用，命令体可以 await 这个 Promise 后清理。
+   */
+  askBtw(question: string): Promise<void>;
 }
 
 export interface SlashCommandContext {
