@@ -38,3 +38,6 @@ logs/
 .muse/models.local.json
 # any *.local.json file may hold secrets; never commit
 *.local.json
+
+
+CLAUDE.md
