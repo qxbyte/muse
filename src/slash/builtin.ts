@@ -24,6 +24,7 @@ import {
   TRUST_LEVELS,
   type TrustLevel,
 } from "../loop/memory.js";
+import { buildMemoryIndex, queryMemoryIndex } from "../loop/memory-index.js";
 
 // ----- /help -----
 
@@ -495,6 +496,7 @@ const MEMORY_HELP = [
   `  /memory promote <name>        auto → verified`,
   `  /memory trust <name> <level>  set trust (verified | auto;`,
   `                                 trusted is reserved for MUSE.md / AGENTS.md)`,
+  `  /memory search <query>        vector-based semantic search (II-5)`,
 ].join("\n");
 
 const MEMORY: SlashCommand = {
@@ -522,6 +524,11 @@ const MEMORY: SlashCommand = {
         case "trust":
           if (!parts[1] || !parts[2]) return { display: `Usage: /memory trust <name> <verified|auto>` };
           return await memoryAssignTrust(ctx.cwd, parts[1], parts[2]);
+        case "search": {
+          const query = parts.slice(1).join(" ");
+          if (!query) return { display: `Usage: /memory search <query>` };
+          return await memorySearch(ctx.cwd, query);
+        }
         case "help":
           return { display: MEMORY_HELP };
         default:
@@ -582,6 +589,28 @@ async function memoryPromote(cwd: string, name: string) {
   }
   await setMemoryTrust(cwd, name, "verified", "user-edit");
   return { display: `Promoted "${name}": auto → verified.` };
+}
+
+async function memorySearch(cwd: string, query: string) {
+  const index = await buildMemoryIndex(cwd);
+  if (index.entries.length === 0) {
+    return { display: `(no memories saved for this project)\n\nWrite some first with MemoryWrite (LLM-side) or /remember.` };
+  }
+  const results = await queryMemoryIndex(index, query, { topK: 5 });
+  if (results.length === 0) {
+    return { display: `(no memories matched "${query}")\n\nTry simpler keywords; current provider is "${index.provider.id}" — pure keyword + simple semantic matching.` };
+  }
+  const lines = results.map((r, i) => {
+    const score = (r.score * 100).toFixed(1);
+    const w = r.weighted.toFixed(3);
+    return `  ${i + 1}. [${r.entry.trust}] (${r.entry.type}) ${r.entry.name}   score=${score}% w=${w}\n     — ${r.entry.description}`;
+  });
+  return {
+    display:
+      `Top ${results.length} match${results.length === 1 ? "" : "es"} for "${query}":\n\n` +
+      lines.join("\n\n") +
+      `\n\n(provider: ${index.provider.id};  use /memory view <name> to see full content)`,
+  };
 }
 
 async function memoryAssignTrust(cwd: string, name: string, levelArg: string) {

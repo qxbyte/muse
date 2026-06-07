@@ -147,6 +147,19 @@ export const SettingsSchema = z.object({
    * (见 src/preprocess/hooks.ts),不会自动透传给 hook 命令,避免泄露密钥。
    */
   env: z.record(z.string()).optional(),
+  /** Memory 模块设置(II-5 向量索引)。 */
+  memory: z.object({
+    embedding: z.object({
+      /** 启用 embedding 召回(默认 false;关闭时 inject-memory 走传统全文)。 */
+      enabled: z.boolean().optional(),
+      /** 后端 provider。本期支持 hash-bag(零依赖);local-minilm / openai 留下批。 */
+      provider: z.enum(["hash-bag", "local-minilm", "openai"]).optional(),
+      /** 检索 top-K(默认 5)。 */
+      topK: z.number().int().positive().optional(),
+      /** memory 数量低于此值时退化到全注入(默认 10)。 */
+      minMemoryCount: z.number().int().nonnegative().optional(),
+    }).optional(),
+  }).optional(),
 }).passthrough();
 
 export type Settings = z.infer<typeof SettingsSchema>;
