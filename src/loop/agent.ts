@@ -29,7 +29,9 @@ import { log } from "../log/index.js";
 import type { Pipeline } from "../preprocess/pipeline.js";
 import { PipelineBlockedError } from "../preprocess/pipeline.js";
 import type { RequestCtx, RequestServices } from "../preprocess/request/index.js";
-import { createRequestCtx } from "../preprocess/request/index.js";
+import { createRequestCtx, BudgetExceededError } from "../preprocess/request/index.js";
+import { countMessages } from "../preprocess/tokenize.js";
+import { compactMessages } from "./context.js";
 import type { ResultCtx, ResultPreprocessSettings } from "../preprocess/result/index.js";
 import { createResultCtx } from "../preprocess/result/index.js";
 import type { HooksConfig } from "../preprocess/hooks.js";
@@ -90,6 +92,11 @@ export interface AgentEvents {
    * 真实 finish usage 到达时 onUsage 会再用真实 inputTokens **覆盖**(不是累加)turn 快照。
    */
   onEstimate?: (inputTokens: number) => void;
+  /**
+   * 队列里的 guidance 被 inject 进 messages 数组后触发(在新一轮 LLM stream 启动**之前**)。
+   * UI 用来清空"待引导"小框 — 内容已经"上车"了,不再 pending。
+   */
+  onGuidanceInjected?: (parts: ContentPart[]) => void;
   onError?: (error: Error) => void;
   /**
    * 一段 assistant 流结束、assistantMessage 已 push 进 messages,但工具还没开始执行时触发。
@@ -142,31 +149,30 @@ export class Agent {
   private lastEstimateInputTokens = 0;
   /** 当前轮次的 abort signal(runTurn 开始时设,结束清);runToolCall 读它给 execa 等用。 */
   private turnAbortSignal?: AbortSignal;
+  /**
+   * "引导(guidance)"队列:模型还在跑时用户继续输入的内容暂存这里。
+   * 主循环每轮 stream 启动前 check + flush;合并成一条 role:user 注入 messages,
+   * 让 LLM 在下一轮看到"已跑完的 tool result + 用户新输入"一起决策。
+   *
+   * 注入点:工具批跑完、下一轮 LLM stream 之前。**不打断**正在跑的工具,避免模型
+   * 因丢失中间结果而重跑(用户原话:"不应该直接终止某一个小的命令或者工具执行")。
+   *
+   * Esc 单击时若队列非空,优先清队列(轻撤销),还有空也不 abort turn。
+   */
+  private pendingGuidance: ContentPart[][] = [];
 
   constructor(private ctx: AgentContext) {
     this.todos = ctx.todos ?? new TodoStore();
   }
 
-  /** 粗略估算 input tokens:chars/4 是 OpenAI 系常用近似;中文偏低但作为流式中实时占位足够。 */
+  /** 估算 input tokens:走 src/preprocess/tokenize.ts(js-tiktoken cl100k_base)。
+   *  比旧 chars/4 精度高,trim-history / budget-guard 也共享同一个估算口径。 */
   private estimateInputTokens(
     messages: Message[],
     systemPrompt: string,
     tools: import("../types/index.js").ToolDefinition[],
   ): number {
-    let chars = systemPrompt.length;
-    for (const m of messages) {
-      if (typeof m.content === "string") {
-        chars += m.content.length;
-      } else if (Array.isArray(m.content)) {
-        for (const p of m.content) {
-          if (p.type === "text") chars += (p.text ?? "").length;
-          else if (p.type === "tool_use") chars += JSON.stringify(p.args ?? {}).length + p.name.length;
-          else if (p.type === "file" || p.type === "image") chars += JSON.stringify(p).length;
-        }
-      }
-    }
-    for (const t of tools) chars += JSON.stringify(t).length;
-    return Math.max(0, Math.floor(chars / 4));
+    return countMessages(messages, systemPrompt, tools);
   }
 
   getMessages(): Message[] {
@@ -175,6 +181,66 @@ export class Agent {
 
   setMessages(msgs: Message[]): void {
     this.messages = msgs;
+  }
+
+  /**
+   * 把一段"引导"内容塞进队列。下一轮 stream 启动前会被合并成一条 role:user 注入 messages。
+   * 调用方:App 的 handleSubmit 在 state.status !== "idle" 时走这条路径。
+   */
+  enqueueGuidance(content: string | ContentPart[]): void {
+    const parts: ContentPart[] = typeof content === "string"
+      ? [{ type: "text", text: content }]
+      : content;
+    this.pendingGuidance.push(parts);
+  }
+
+  /** 用户单击 Esc 时若队列非空,清掉(轻撤销;不 abort 当前 turn)。 */
+  clearGuidance(): void {
+    this.pendingGuidance.length = 0;
+  }
+
+  getPendingGuidanceCount(): number {
+    return this.pendingGuidance.length;
+  }
+
+  /**
+   * 把当前 pendingGuidance 合并成一条 role:user message push 进 messages,清空队列。
+   * 多条 guidance 之间用空行分隔(模型把它们读成"一次性补充的几点")。
+   * 返回 true 表示真的注入了内容;false 表示队列本就空。
+   */
+  private flushGuidance(): boolean {
+    if (this.pendingGuidance.length === 0) return false;
+    const queued = this.pendingGuidance;
+    this.pendingGuidance = [];
+
+    // 合并:每条 guidance 是 ContentPart[];多条之间塞一段分隔 text。
+    // 优先合并所有相邻 text part 成一段(避免一堆零散 part 在 LLM 端看起来怪)。
+    const merged: ContentPart[] = [];
+    const SEP = "\n\n---\n\n";
+    for (let i = 0; i < queued.length; i++) {
+      const parts = queued[i];
+      if (i > 0) {
+        // 分隔符尽量并入前一段 text 末尾
+        const tail = merged[merged.length - 1];
+        if (tail && tail.type === "text") tail.text += SEP;
+        else merged.push({ type: "text", text: SEP });
+      }
+      for (const p of parts) {
+        const tail = merged[merged.length - 1];
+        if (p.type === "text" && tail && tail.type === "text") {
+          tail.text += p.text;
+        } else {
+          // 浅拷贝避免外部突变影响 messages
+          merged.push({ ...p });
+        }
+      }
+    }
+
+    const guidanceMsg: Message = { role: "user", content: merged };
+    this.messages.push(guidanceMsg);
+    this.ctx.session.append({ type: "message", time: new Date().toISOString(), message: guidanceMsg });
+    this.ctx.events?.onGuidanceInjected?.(merged);
+    return true;
   }
 
   /**
@@ -197,10 +263,32 @@ export class Agent {
 
     // 内部循环:工具调用可能多轮
     while (true) {
-      let { systemPrompt, tools } = await this.buildRequest();
+      // 上一轮 tool 跑完(或 turn 刚开始)→ stream 启动前 flush guidance 队列。
+      // 注入点:已落到 messages 的"tool_result 序列"之后 + 下一轮 stream 之前,
+      // 这样 LLM 在 prompt 里看到的就是「上轮工具结果 + 用户新输入」,顺势继续推进
+      // 而不会因为消息丢失重跑刚才的工具。
+      this.flushGuidance();
+
+      let systemPrompt: string;
+      let tools: import("../types/index.js").ToolDefinition[];
+      let messagesForStream: Message[];
+      try {
+        const built = await this.buildRequest();
+        systemPrompt = built.systemPrompt;
+        tools = built.tools;
+        messagesForStream = built.messages;
+      } catch (err) {
+        // budget-guard 抛 BudgetExceededError → 报给用户,turn 结束
+        if (err instanceof BudgetExceededError) {
+          this.ctx.events?.onError?.(err);
+          log.error("budget exceeded", { msg: err.message });
+          this.turnAbortSignal = undefined;
+          return;
+        }
+        throw err;
+      }
 
       // PreLLMRequest hook 可改写 messages / systemPrompt / tools 或 block
-      let messagesForStream = this.messages;
       try {
         const hookOut = await runHooks(
           "PreLLMRequest",
@@ -300,6 +388,10 @@ export class Agent {
       }
 
       if (toolCallsToRun.length === 0) {
+        // 模型刚说完一段 text 没要工具——本该 turn 结束。但若用户在生成期间塞了 guidance
+        // 进队列,把"结束"折叠成"继续下一轮":循环顶上 flushGuidance 会把它注入成新的
+        // user message,LLM 在新一轮 stream 里基于"刚答完的内容 + 用户追问"自然推进。
+        if (this.pendingGuidance.length > 0) continue;
         this.ctx.events?.onTurnEnd?.();
         this.turnAbortSignal = undefined;
         return;
@@ -329,18 +421,44 @@ export class Agent {
     }
   }
 
-  /** 拼装本轮 system prompt + tools。优先走 RequestPipeline,无 pipeline 时回退到 legacy 路径。 */
-  private async buildRequest(): Promise<{ systemPrompt: string; tools: import("../types/index.js").ToolDefinition[] }> {
+  /** 拼装本轮 system prompt + tools(+ 可能 trim 后的 messages)。
+   *  优先走 RequestPipeline,无 pipeline 时回退到 legacy 路径。
+   *
+   *  注意:trim-history 可能替换 ctx.messages,这里把它回流出去给主循环作为
+   *  messagesForStream。**不污染** this.messages — 因为 trim 是临时为本次请求
+   *  做的窗口缩减,真正的历史不动(budget-guard 触发的 compact 例外:那是
+   *  通过 services.compact 真实写回 this.messages 的)。 */
+  private async buildRequest(): Promise<{
+    systemPrompt: string;
+    tools: import("../types/index.js").ToolDefinition[];
+    messages: Message[];
+  }> {
     if (this.ctx.requestPipeline && this.ctx.requestServices) {
       const ctx = createRequestCtx({
         messages: this.messages,
         modelId: this.ctx.llm.model,
         mode: this.ctx.permissions.getMode(),
         cwd: this.ctx.cwd,
-        services: { ...this.ctx.requestServices, todos: this.todos },
+        services: {
+          ...this.ctx.requestServices,
+          todos: this.todos,
+          contextWindow: this.ctx.llm.capabilities.maxContextWindow,
+          abortSignal: this.turnAbortSignal,
+          // compact 闭包:budget-guard 触发时调用。真实改写 this.messages
+          // (compact 是历史压缩,不可逆,要落到 agent state)。
+          compact: async (signal) => {
+            const result = await compactMessages(this.messages, {
+              llm: this.ctx.llm,
+              abortSignal: signal,
+              hooks: this.ctx.hooks,
+            });
+            this.messages = result.newMessages;
+            return this.messages;
+          },
+        },
       });
       await this.ctx.requestPipeline.run(ctx);
-      return { systemPrompt: ctx.systemPrompt, tools: ctx.tools };
+      return { systemPrompt: ctx.systemPrompt, tools: ctx.tools, messages: ctx.messages };
     }
     // Legacy fallback
     const mode = this.ctx.permissions.getMode();
@@ -350,7 +468,7 @@ export class Agent {
     const todoSection = this.todos.toPromptSection();
     const base = this.ctx.systemPrompt ?? "";
     const systemPrompt = todoSection ? `${base}\n\n${todoSection}` : base;
-    return { systemPrompt, tools };
+    return { systemPrompt, tools, messages: this.messages };
   }
 
   private handleEvent(
