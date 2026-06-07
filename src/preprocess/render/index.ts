@@ -36,6 +36,49 @@ export function foldToolResult(content: string, maxLines: number): FoldedResult 
   return { lines: all.slice(0, maxLines), omittedLines: all.length - maxLines };
 }
 
+/**
+ * 单条 assistant 消息内容过长(> maxLines)时折叠成 head + omitted 标记 + tail 三段。
+ * 设计文档:模块设计/消息预处理工程/设计.md §4.4.2(`collapse-long`)。
+ *
+ * 折叠原则:
+ *   - 默认 200 行触发(只盖"小说级"长输出,日常对话不受影响)
+ *   - 头 5 行 + 尾 5 行 + 中间 omittedLines 计数;让用户既看到意图,又看到结论
+ *   - **仅在历史回看触发** — 流式中由 StreamingMarkdown 独立渲染,不调本 helper
+ *   - 完整内容仍在 session JSONL,需要时 /resume 重新加载
+ *
+ * 不支持展开:Ink TUI 里"按某键展开第 K 条 message"需引入 view state + 键盘路由,
+ * 增加复杂度但价值低(完整内容已在 JSONL)。等真有需求再加。
+ */
+export interface CollapsedLong {
+  head: string[];
+  tail: string[];
+  omittedLines: number;
+  collapsed: boolean;
+}
+
+export function collapseLong(
+  content: string,
+  opts: { maxLines?: number; headLines?: number; tailLines?: number } = {},
+): CollapsedLong {
+  const maxLines = opts.maxLines ?? 200;
+  const headLines = opts.headLines ?? 5;
+  const tailLines = opts.tailLines ?? 5;
+  const all = content.split("\n");
+  if (all.length <= maxLines) {
+    return { head: all, tail: [], omittedLines: 0, collapsed: false };
+  }
+  // 退化兜底:head + tail 比 maxLines 还大(opts 配错) → 按比例缩
+  const room = Math.max(2, Math.min(maxLines - 1, headLines + tailLines));
+  const safeHead = Math.max(1, Math.floor(room * (headLines / (headLines + tailLines))));
+  const safeTail = Math.max(1, room - safeHead);
+  return {
+    head: all.slice(0, safeHead),
+    tail: all.slice(-safeTail),
+    omittedLines: all.length - safeHead - safeTail,
+    collapsed: true,
+  };
+}
+
 /** Unified diff 头几行(Index / === / --- / +++)裁掉,只保留 @@ hunks。 */
 export function diffHunksOnly(diff: string): string[] {
   const lines = diff.split("\n");

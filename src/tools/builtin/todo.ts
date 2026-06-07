@@ -24,6 +24,14 @@ const TodoSchema = z.object({
 
 const TodoWriteArgs = z.object({
   todos: z.array(TodoSchema).describe("Full list. Replaces the current store."),
+  listTitle: z
+    .string()
+    .optional()
+    .describe(
+      "Short (2-6 word) imperative title describing the OVERALL goal of this todo list, e.g. " +
+        "'Refactor auth flow' / '分析 Muse 架构' / 'Migrate to ESM'. Shown as the list header in UI. " +
+        "Keep it stable across calls within the same task; only change it if the goal genuinely shifts.",
+    ),
 });
 
 export const TodoWriteTool = defineTool({
@@ -31,7 +39,8 @@ export const TodoWriteTool = defineTool({
   description:
     "Maintain a structured task list for the current session. Pass the FULL list every call (it replaces the store). " +
     "Mark exactly one task in_progress at a time; mark completed immediately when done; do not batch completions. " +
-    "Use when the task has 3+ distinct steps or is non-trivial. Skip for single trivial actions.",
+    "Use when the task has 3+ distinct steps or is non-trivial. Skip for single trivial actions. " +
+    "Always include `listTitle` summarizing the overall goal so the UI can label this batch meaningfully.",
   parameters: TodoWriteArgs,
   permission: "read",
   summarize: (args) => `TodoWrite(${args.todos.length} items)`,

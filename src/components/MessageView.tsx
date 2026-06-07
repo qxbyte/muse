@@ -8,16 +8,20 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useStdout } from "ink";
 import chalk from "chalk";
+import { parsePatch } from "diff";
+import { highlight, supportsLanguage } from "cli-highlight";
 import type { Message, ContentPart, ToolMessage, ToolUsePart } from "../types/index.js";
 import type { TodoItem } from "../tools/builtin/todo.js";
 import { stringWidth } from "./BgTextInput.js";
 import { renderMarkdown } from "../preprocess/render/index.js";
 import { FOCUS_COLOR, ACTIVE_TODO_COLOR } from "../ui/theme.js";
+import { Shimmer } from "./Shimmer.js";
 
 export function MessageView({
   message,
   resultsByCallId,
   latestTodoWritePartId,
+  lastStartedToolId,
 }: {
   message: Message;
   /** 上层（app）按 toolUseId 索引的工具结果映射；AssistantMessage 据此把 result 内联到 call 下方。 */
@@ -26,6 +30,8 @@ export function MessageView({
    *  非最新的 TodoWrite part 不渲染,避免多个 → Todos 块刷屏(当 LLM 把 TodoWrite 跟其他
    *  tool_use 放在同一条 message 里时,message 级去重逻辑无法覆盖,需要 part 级补)。 */
   latestTodoWritePartId?: string;
+  /** 最近一次 onToolCallStart 的 tool_use id;BatchedToolBlock 据此 hold 上一个 active row。 */
+  lastStartedToolId?: string | null;
 }) {
   switch (message.role) {
     case "user":
@@ -36,6 +42,7 @@ export function MessageView({
           content={message.content}
           resultsByCallId={resultsByCallId}
           latestTodoWritePartId={latestTodoWritePartId}
+          lastStartedToolId={lastStartedToolId}
         />
       );
     case "tool":
@@ -149,10 +156,12 @@ function AssistantMessage({
   content,
   resultsByCallId,
   latestTodoWritePartId,
+  lastStartedToolId,
 }: {
   content: ContentPart[];
   resultsByCallId?: Map<string, ToolMessage>;
   latestTodoWritePartId?: string;
+  lastStartedToolId?: string | null;
 }) {
   // message 内 part 级聚合:连续 tool_use(非 TodoWrite) → BatchedToolBlock
   // 解决"LLM 单条 message 含 text + 多个 tool_use"散开渲染的问题:
@@ -160,7 +169,7 @@ function AssistantMessage({
   //   新: ● Let me check  /  ● Reading 3 files…  └ Read(a)..  └ Read(b)..  └ Read(c)..
   type RenderItem =
     | { kind: "text"; text: string; key: string }
-    | { kind: "todoWrite"; todos: TodoItem[]; key: string }
+    | { kind: "todoWrite"; todos: TodoItem[]; listTitle?: string; key: string }
     | { kind: "askUserQuestion"; result?: ToolMessage; key: string }
     | { kind: "batch"; uses: BatchedToolUse[]; key: string };
   const items: RenderItem[] = [];
@@ -177,18 +186,28 @@ function AssistantMessage({
       items.push({ kind: "text", text: part.text, key: `t-${i}` });
     } else if (part.type === "tool_use") {
       if (part.name === "TodoWrite") {
-        // part 级去重:历史里多个 TodoWrite,只渲染最新那个;非最新的整体跳过
-        if (latestTodoWritePartId !== undefined && part.id !== latestTodoWritePartId) return;
-        flush(i);
-        items.push({ kind: "todoWrite", todos: extractTodos(part.args), key: `td-${i}` });
+        // TodoWrite 不再在历史区渲染,完全交给底部 sticky TodoList(对齐 Claude Code)。
+        // latestTodoWritePartId 字段保留兼容签名,本路径不再消费。
+        return;
       } else if (part.name === "AskUserQuestion") {
         // AskUserQuestion 单独走特殊渲染(对齐 Claude Code 的 "User answered Claude's questions" 样式),
         // 不进 batch
         flush(i);
         items.push({ kind: "askUserQuestion", result: resultsByCallId?.get(part.id), key: `q-${i}` });
-      } else {
+      } else if (BATCHABLE_TOOLS.has(part.name)) {
+        // 纯读工具(Read/Glob/Grep/MemoryRead)进 batch 聚合
         if (batch.length === 0) batchStart = i;
         batch.push({ part, result: resultsByCallId?.get(part.id) });
+      } else {
+        // 有副作用 / 关键产物的工具(Edit/Write/Bash/WebFetch/MemoryWrite 等)单独显示。
+        // 复用 length===1 → ToolCallBlock 的现有 fallback 路径:
+        //   header (Tool name + 参数核心) + result + diff(若有)
+        flush(i);
+        items.push({
+          kind: "batch",
+          uses: [{ part, result: resultsByCallId?.get(part.id) }],
+          key: `single-${i}`,
+        });
       }
     }
   });
@@ -198,20 +217,24 @@ function AssistantMessage({
     <Box flexDirection="column" marginTop={1}>
       {items.map((item) => {
         if (item.kind === "text") return <AssistantTextPart key={item.key} text={item.text} />;
-        if (item.kind === "todoWrite") return <TodoList key={item.key} todos={item.todos} />;
+        if (item.kind === "todoWrite") return <TodoList key={item.key} todos={item.todos} listTitle={item.listTitle} />;
         if (item.kind === "askUserQuestion") return <AskUserQuestionResult key={item.key} result={item.result} />;
         // batch:length === 1 回退原 ToolCallBlock(避免无意义的 header)
         if (item.uses.length === 1) {
           const u = item.uses[0];
           return <ToolCallBlock key={item.key} name={u.part.name} args={u.part.args} result={u.result} />;
         }
-        return <BatchedToolBlock key={item.key} uses={item.uses} />;
+        return <BatchedToolBlock key={item.key} uses={item.uses} lastStartedToolId={lastStartedToolId} />;
       })}
     </Box>
   );
 }
 
 function AssistantTextPart({ text }: { text: string }) {
+  // 不再 collapse-long 折叠:muse 没有 TUI 展开键(Claude Code 有 Ctrl+R,muse 没接),
+  // 折叠 = 丢内容。终端 scrollback 足够展示长输出。
+  // collapseLong helper 留着供 ResultPipeline 折叠工具结果(那里有 summary 可恢复),
+  // 但 assistant 文本直接渲染全文。
   const rendered = useMemo(() => renderMarkdown(text), [text]);
   return (
     <Box flexDirection="row">
@@ -240,23 +263,79 @@ function ToolCallLine({ name, args }: { name: string; args: unknown }) {
   );
 }
 
-function extractTodos(args: unknown): TodoItem[] {
+export function extractTodos(args: unknown): TodoItem[] {
   if (typeof args !== "object" || args === null) return [];
   const todos = (args as { todos?: unknown }).todos;
   return Array.isArray(todos) ? (todos as TodoItem[]) : [];
 }
 
-// 仿 Claude Code 的 checkbox 清单：完成态打钩 + 删除线，进行中高亮，待办置灰。
-function TodoList({ todos }: { todos: TodoItem[] }) {
+/** TodoWrite args.listTitle 提取(可选):LLM 给整批 todo 起的标题。 */
+export function extractListTitle(args: unknown): string | undefined {
+  if (typeof args !== "object" || args === null) return undefined;
+  const t = (args as { listTitle?: unknown }).listTitle;
+  return typeof t === "string" && t.trim() ? t.trim() : undefined;
+}
+
+/** 首条 todo 的 content 截断作为兜底标题(B 方案);省略号 + 最大 40 字。 */
+function fallbackTitleFromTodos(todos: TodoItem[]): string {
+  const first = todos[0]?.content?.trim();
+  if (!first) return "Todos";
+  return first.length > 40 ? first.slice(0, 40) + "…" : first;
+}
+
+// 仿 Claude Code 的 todos:
+// - in_progress 时顶层升级为 active 状态行(Shimmer 扫光 activeForm + 计时)
+// - 否则顶层用 LLM 起的 listTitle(A 方案);LLM 没给 → 首条 content 截断兜底(B 方案)
+// - 完成态用绿色 ✓(不再 strikethrough,对齐 Claude Code 风格)
+export function TodoList({ todos, listTitle }: { todos: TodoItem[]; listTitle?: string }) {
+  const inProgress = todos.find((t) => t.status === "in_progress");
+  // 用 content 作为身份键(activeForm 可能省略,content 是稳定的)
+  const inProgressKey = inProgress?.content ?? null;
+  // 该 in_progress 项首次出现的时刻;切到别的 todo 时重置
+  const startRef = React.useRef<{ key: string; at: number } | null>(null);
+  if (inProgressKey) {
+    if (!startRef.current || startRef.current.key !== inProgressKey) {
+      startRef.current = { key: inProgressKey, at: Date.now() };
+    }
+  } else {
+    startRef.current = null;
+  }
+  // 500ms tick 让 (Xs) 计时刷新
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!inProgressKey) return;
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, [inProgressKey]);
+
+  // 静态 header 标题:LLM listTitle 优先,否则首条 content 截断,最后 fallback "Todos"
+  const staticTitle = listTitle ?? fallbackTitleFromTodos(todos);
+
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Box flexDirection="row">
-        <Text color={FOCUS_COLOR}>{"→ "}</Text>
-        <Text color={FOCUS_COLOR} bold>Todos</Text>
-      </Box>
+      {inProgress && startRef.current ? (
+        <TodoActiveHeader todo={inProgress} elapsedSec={Math.max(0, Math.floor((now - startRef.current.at) / 1000))} />
+      ) : (
+        <Box flexDirection="row">
+          <Text color={FOCUS_COLOR}>{"→ "}</Text>
+          <Text color={FOCUS_COLOR} bold>{staticTitle}</Text>
+        </Box>
+      )}
       {todos.map((todo, i) => (
         <TodoRow key={i} todo={todo} />
       ))}
+    </Box>
+  );
+}
+
+/** 顶层 active header:`● <activeForm>… (Xs)`,activeForm 文字走 Shimmer 扫光。 */
+function TodoActiveHeader({ todo, elapsedSec }: { todo: TodoItem; elapsedSec: number }) {
+  const label = todo.activeForm ?? todo.content;
+  return (
+    <Box flexDirection="row">
+      <Text color={FOCUS_COLOR}>{DOT} </Text>
+      <Shimmer text={label} />
+      <Text dimColor>{`… (${elapsedSec}s)`}</Text>
     </Box>
   );
 }
@@ -265,11 +344,11 @@ function TodoRow({ todo }: { todo: TodoItem }) {
   const label = todo.status === "in_progress" && todo.activeForm ? todo.activeForm : todo.content;
   switch (todo.status) {
     case "completed":
-      // 完成态:dim ☒ + dim 删除线;去掉 green,与整列统一灰度,更克制
+      // 完成态:绿色 ✓ + 普通文字(无 strikethrough,对齐 Claude Code)
       return (
         <Box flexDirection="row" marginLeft={2}>
-          <Text dimColor>{"☒ "}</Text>
-          <Text dimColor strikethrough>{label}</Text>
+          <Text color="green">{"✓ "}</Text>
+          <Text>{label}</Text>
         </Box>
       );
     case "in_progress":
@@ -374,6 +453,9 @@ function AskUserQuestionResult({ result }: { result?: ToolMessage }) {
 /**
  * 单个工具的"调用 + 结果"块（仿 Claude Code 的 ●Tool(...) + └ result 树形展示）。
  * 结果 region 缩进 2 空格，首行用 └ 树枝角标，颜色按状态。
+ *
+ * Edit/Write 且 result 含 diff 时,header 之下额外加一行 `└ Added N lines, removed M lines`
+ * (从 unified diff 字符串数 +/- 行得出),对齐 Claude Code 风格。
  */
 function ToolCallBlock({
   name,
@@ -384,12 +466,48 @@ function ToolCallBlock({
   args: unknown;
   result?: ToolMessage;
 }) {
+  const diffStats = useMemo(
+    () => (result?.diff ? countDiffStats(result.diff) : null),
+    [result?.diff],
+  );
+  // 从 Edit/Write args 提 file_path 透传给 DiffBlock,用于 syntax highlight 语言推断
+  const filePath =
+    typeof args === "object" && args !== null
+      ? (args as { file_path?: unknown }).file_path
+      : undefined;
+  const filePathStr = typeof filePath === "string" ? filePath : undefined;
   return (
     <Box flexDirection="column">
       <ToolCallLine name={name} args={args} />
-      {result && <ToolResultTree result={result} />}
+      {diffStats && (
+        <Box flexDirection="row" marginLeft={2}>
+          <Text dimColor>{"└ "}</Text>
+          <Text dimColor>{formatDiffStats(diffStats)}</Text>
+        </Box>
+      )}
+      {result && <ToolResultTree result={result} suppressContent={!!diffStats} filePath={filePathStr} />}
     </Box>
   );
+}
+
+/** 数 unified diff 字符串里的 + / - 行(跳过 hunk header `+++` / `---`)。 */
+function countDiffStats(diff: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) added++;
+    else if (line.startsWith("-")) removed++;
+  }
+  return { added, removed };
+}
+
+function formatDiffStats(s: { added: number; removed: number }): string {
+  const parts: string[] = [];
+  if (s.added > 0) parts.push(`Added ${s.added} line${s.added === 1 ? "" : "s"}`);
+  if (s.removed > 0) parts.push(`removed ${s.removed} line${s.removed === 1 ? "" : "s"}`);
+  if (parts.length === 0) return "No changes";
+  return parts.join(", ");
 }
 
 const MAX_RESULT_LINES = 5;
@@ -402,7 +520,20 @@ const MAX_RESULT_LINES = 5;
  *
  * standalone 标志：用于兜底（独立成块）的情况——通常不会触发。
  */
-function ToolResultTree({ result, standalone = false }: { result: ToolMessage; standalone?: boolean }) {
+function ToolResultTree({
+  result,
+  standalone = false,
+  suppressContent = false,
+  filePath,
+}: {
+  result: ToolMessage;
+  standalone?: boolean;
+  /** Edit/Write 等已经在上层用 `Added N, removed M` 表达了 content 摘要时,跳过这里再渲染一遍 content。
+   *  diff 仍然由 DiffBlock 单独渲染。 */
+  suppressContent?: boolean;
+  /** Edit/Write 的 file_path,透给 DiffBlock 推断 syntax language。 */
+  filePath?: string;
+}) {
   // bash 等工具会把 stdout/stderr 包在 <stdout>...</stdout> 里给 LLM 区分通道；
   // UI 里把这种独立行的标签剥掉,让用户直接看到 stdout 内容
   const cleaned = stripWrapperTags(result.content);
@@ -429,21 +560,22 @@ function ToolResultTree({ result, standalone = false }: { result: ToolMessage; s
 
   return (
     <Box flexDirection="column" marginLeft={2} marginTop={standalone ? 1 : 0}>
-      {displayLines.map((line, i) => (
-        <Box key={i} flexDirection="row">
-          {/* └ 统一灰色:状态信息已由上方 ● 的 dotColor 传达,树枝不再叠色,避免视觉杂乱 */}
-          <Text dimColor>{i === 0 ? "└ " : "  "}</Text>
-          <Box flexGrow={1} minWidth={0}>
-            <Text dimColor wrap="truncate-end">{line || " "}</Text>
+      {!suppressContent &&
+        displayLines.map((line, i) => (
+          <Box key={i} flexDirection="row">
+            {/* └ 统一灰色:状态信息已由上方 ● 的 dotColor 传达,树枝不再叠色,避免视觉杂乱 */}
+            <Text dimColor>{i === 0 ? "└ " : "  "}</Text>
+            <Box flexGrow={1} minWidth={0}>
+              <Text dimColor wrap="truncate-end">{line || " "}</Text>
+            </Box>
           </Box>
-        </Box>
-      ))}
-      {omitted > 0 && (
+        ))}
+      {!suppressContent && omitted > 0 && (
         <Box marginLeft={2}>
           <Text dimColor>{`(+${omitted} more lines)`}</Text>
         </Box>
       )}
-      {result.diff && <DiffBlock diff={result.diff} />}
+      {result.diff && <DiffBlock diff={result.diff} filePath={filePath} />}
     </Box>
   );
 }
@@ -456,32 +588,258 @@ function stripWrapperTags(content: string): string {
     .join("\n");
 }
 
-function DiffBlock({ diff }: { diff: string }) {
-  // jsdiff createPatch 头四行：Index / === / --- / +++；省略，只渲染 hunks
-  const lines = diff.split("\n");
-  const start = lines.findIndex((l) => l.startsWith("@@"));
-  const rendered = start >= 0 ? lines.slice(start) : lines;
+/**
+ * Diff 渲染:对齐 Claude Code 风格 — 绝对行号 + 整行 bg 高亮(延伸到 EOL)。
+ *
+ * 数据流:工具(edit/write)生成的 unified diff 字符串 → jsdiff::parsePatch
+ *   → hunks 数组(每个 hunk 有 oldStart/newStart + lines[`+/-/space` 前缀])
+ *   → 按 hunks 渲染:行号列(右对齐) + `+/-/space` 列 + 内容
+ *
+ * **bg 延伸到 EOL** 用 ANSI `\x1b[K`(Erase in Line)+ 当前 bg 色:VT100 标准,
+ * 终端自动用当前 bg 把行末空白填满,**不需要**算 termWidth 做 padEnd。这避免了
+ * 之前 padEnd 算宽度边界跟 Ink Box 实际可用宽度不一致导致的 wrap → 行间空白。
+ *
+ * 颜色用 ANSI 标准 8 色(bgGreen / bgRed),终端主题决定具体色调
+ * (Solarized / Dracula / 默认 各自映射不同绿/红)。
+ */
+// 用 truecolor RGB(\x1b[48;2;R;G;Bm)做暗绿/暗红,对齐 GitHub / VSCode 暗主题
+// diff 风格,不依赖终端主题映射(避免 \x1b[42m 在不同主题下出现刺眼亮绿)。
+// 配色参考 GitHub dark + 略提亮(确保中文也能读清)。
+const ANSI_BG_ADD = "\x1b[48;2;28;56;33m";    // #1c3821 暗叶绿
+const ANSI_BG_REMOVE = "\x1b[48;2;80;30;30m"; // #501e1e 暗酒红
+const ANSI_FG = "\x1b[38;2;220;220;220m";     // #dcdcdc 浅灰白(bg 上默认文字)
+const ANSI_EL = "\x1b[K";                     // Erase in Line:用当前 bg 把行末填到 EOL
+const ANSI_RESET = "\x1b[0m";
+const ANSI_FG_RESET = "\x1b[39m";             // 只 reset fg(保留 bg)
+
+/** 文件扩展名 → highlight.js 语言名映射。未列出的返 undefined,DiffLine 跳过 highlight。 */
+function inferLanguage(filePath?: string): string | undefined {
+  if (!filePath) return undefined;
+  const ext = filePath.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  if (!ext) return undefined;
+  const map: Record<string, string> = {
+    ts: "typescript",
+    tsx: "typescript",
+    js: "javascript",
+    jsx: "javascript",
+    mjs: "javascript",
+    cjs: "javascript",
+    py: "python",
+    rs: "rust",
+    go: "go",
+    java: "java",
+    kt: "kotlin",
+    swift: "swift",
+    rb: "ruby",
+    php: "php",
+    c: "c",
+    h: "c",
+    cpp: "cpp",
+    hpp: "cpp",
+    cs: "csharp",
+    sh: "bash",
+    bash: "bash",
+    zsh: "bash",
+    md: "markdown",
+    markdown: "markdown",
+    json: "json",
+    yaml: "yaml",
+    yml: "yaml",
+    toml: "ini",
+    xml: "xml",
+    html: "xml",
+    css: "css",
+    scss: "scss",
+    sql: "sql",
+    vue: "html",
+    svelte: "html",
+  };
+  const lang = map[ext];
+  if (!lang) return undefined;
+  // cli-highlight 装载语言要靠 highlight.js;有的语言可能未注册
+  try {
+    return supportsLanguage(lang) ? lang : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 对单行做 syntax highlight;language 推断失败或 highlight 抛错都退回原文。
+ *  关键:把 cli-highlight 输出里的 `\x1b[39m`(fg reset 到终端默认)替换成
+ *  我们设定的 ANSI_FG(#dcdcdc),保持外层 fg 不被中断 → bg 上的文字色一致。 */
+function highlightLine(text: string, lang?: string): string {
+  if (!lang || !text) return text;
+  try {
+    const out = highlight(text, { language: lang, ignoreIllegals: true });
+    // syntax token 内部 reset 用 \x1b[39m → 替回我们的 #dcdcdc,避免恢复终端默认 fg
+    return out.replace(/\x1b\[39m/g, ANSI_FG);
+  } catch {
+    return text;
+  }
+}
+
+function DiffBlock({ diff, filePath }: { diff: string; filePath?: string }) {
+  const { stdout } = useStdout();
+  const termWidth = stdout?.columns ?? 80;
+
+  const hunks = useMemo(() => {
+    try {
+      const patches = parsePatch(diff);
+      return patches[0]?.hunks ?? [];
+    } catch {
+      return [];
+    }
+  }, [diff]);
+
+  const lang = useMemo(() => inferLanguage(filePath), [filePath]);
+
+  if (hunks.length === 0) return null;
+
+  const maxLineNum = Math.max(
+    ...hunks.map((h) => Math.max(h.oldStart + h.oldLines, h.newStart + h.newLines)),
+  );
+  const lineNumWidth = String(maxLineNum).length;
+  // contentWidth = 终端宽 - 左 margin(2) - 行号列(lineNumWidth) - prefix(空格 + mark + 空格 = 3)
+  // -1 留 safety,避免边界情况触发 wrap
+  const contentWidth = Math.max(10, termWidth - 2 - lineNumWidth - 3 - 1);
+
   return (
     <Box flexDirection="column" marginLeft={2} marginTop={1}>
-      {rendered.map((line, i) => {
-        let color: string | undefined;
-        let dim = false;
-        if (line.startsWith("+")) color = "green";
-        else if (line.startsWith("-")) color = "red";
-        else if (line.startsWith("@@")) {
-          color = "cyan";
-          dim = true;
-        } else {
-          dim = true;
-        }
-        return (
-          <Text key={i} color={color} dimColor={dim}>
-            {line || " "}
-          </Text>
-        );
-      })}
+      {hunks.map((hunk, hi) => (
+        <HunkRows
+          key={hi}
+          oldStart={hunk.oldStart}
+          newStart={hunk.newStart}
+          lines={hunk.lines}
+          lineNumWidth={lineNumWidth}
+          contentWidth={contentWidth}
+          lang={lang}
+        />
+      ))}
     </Box>
   );
+}
+
+function HunkRows({
+  oldStart,
+  newStart,
+  lines,
+  lineNumWidth,
+  contentWidth,
+  lang,
+}: {
+  oldStart: number;
+  newStart: number;
+  lines: string[];
+  lineNumWidth: number;
+  contentWidth: number;
+  lang?: string;
+}) {
+  let oldCur = oldStart;
+  let newCur = newStart;
+  const rendered: Array<{ kind: "add" | "remove" | "context"; lineNum: number; text: string }> = [];
+  for (const raw of lines) {
+    if (raw.startsWith("\\")) continue;
+    const ch = raw[0] ?? " ";
+    const text = raw.slice(1);
+    if (ch === "+") {
+      rendered.push({ kind: "add", lineNum: newCur, text });
+      newCur++;
+    } else if (ch === "-") {
+      rendered.push({ kind: "remove", lineNum: oldCur, text });
+      oldCur++;
+    } else {
+      rendered.push({ kind: "context", lineNum: newCur, text });
+      oldCur++;
+      newCur++;
+    }
+  }
+  return (
+    <>
+      {rendered.map((r, i) => (
+        <DiffLine
+          key={i}
+          kind={r.kind}
+          lineNum={r.lineNum}
+          text={r.text}
+          lineNumWidth={lineNumWidth}
+          contentWidth={contentWidth}
+          lang={lang}
+        />
+      ))}
+    </>
+  );
+}
+
+function DiffLine({
+  kind,
+  lineNum,
+  text,
+  lineNumWidth,
+  contentWidth,
+  lang,
+}: {
+  kind: "add" | "remove" | "context";
+  lineNum: number;
+  text: string;
+  lineNumWidth: number;
+  contentWidth: number;
+  lang?: string;
+}) {
+  const numStr = String(lineNum).padStart(lineNumWidth, " ");
+  const mark = kind === "add" ? "+" : kind === "remove" ? "-" : " ";
+  // 先做 syntax highlight 再 padEnd:padEnd 用 visible width(stringWidth,忽略 ANSI)
+  // 确保整行 bg 延伸到 contentWidth + prefix,所有 +/- 行宽度一致,不随内容长度抖动。
+  const highlighted = lang ? highlightLine(text, lang) : text;
+  const visible = stringWidth(stripAnsi(highlighted));
+  // 截断或 padding:长内容截断到 contentWidth;短内容用空格补到 contentWidth(空格也吃 bg 色)
+  const padded =
+    visible > contentWidth ? truncateVisible(highlighted, contentWidth) : highlighted + " ".repeat(contentWidth - visible);
+  const inner = ` ${mark} ${padded}`;
+  let styled: string;
+  if (kind === "add") {
+    styled = `${ANSI_BG_ADD}${ANSI_FG}${inner}${ANSI_RESET}`;
+  } else if (kind === "remove") {
+    styled = `${ANSI_BG_REMOVE}${ANSI_FG}${inner}${ANSI_RESET}`;
+  } else {
+    // context 行不染 bg;高亮后 dim 一层让它柔和
+    styled = chalk.dim(inner);
+  }
+  return (
+    <Box flexDirection="row">
+      <Text dimColor>{numStr}</Text>
+      <Text>{styled}</Text>
+    </Box>
+  );
+}
+
+/** 把带 ANSI 的字符串按 visible width 截断到 maxWidth;粗略实现:
+ *  按 visible 字符逐个累加,不破坏 ANSI 序列。截断后补一个 reset(若有未闭合 ANSI 上下文)。 */
+function truncateVisible(text: string, maxWidth: number): string {
+  let visibleCount = 0;
+  let i = 0;
+  let out = "";
+  while (i < text.length && visibleCount < maxWidth) {
+    const ch = text.charCodeAt(i);
+    if (ch === 0x1b && text[i + 1] === "[") {
+      // ANSI escape:`ESC [ ... letter`,整段照搬,不算 visible
+      const end = text.indexOf("m", i + 2);
+      if (end < 0) {
+        out += text.slice(i);
+        break;
+      }
+      out += text.slice(i, end + 1);
+      i = end + 1;
+    } else {
+      const c = text[i];
+      const w = stringWidth(c);
+      if (visibleCount + w > maxWidth) break;
+      out += c;
+      visibleCount += w;
+      i++;
+    }
+  }
+  return out;
 }
 
 function formatArgs(args: unknown): string {
@@ -499,6 +857,24 @@ function formatArgs(args: unknown): string {
   }
   return parts.join(", ");
 }
+
+/**
+ * 可 batch 聚合的工具白名单 — 仿 Claude Code:探索/查询类工具进 batch。
+ *
+ * 完成态不再"完全隐藏子项",改为常驻显示前 MAX_DONE_ROWS 行 + `(+N more)` 折叠,
+ * 让用户能扫一眼跑过什么命令;长 stdout 详情可走 scrollback 回看。
+ *
+ * **不**进 batch:Edit / Write(diff 必看) / TodoWrite(独立 sticky) /
+ *   AskUserQuestion(独立 Q&A 渲染) / MemoryWrite(写动作)
+ */
+export const BATCHABLE_TOOLS: ReadonlySet<string> = new Set([
+  "Read",
+  "Glob",
+  "Grep",
+  "MemoryRead",
+  "Bash",
+  "WebFetch",
+]);
 
 // ============== Batched tool rendering ==============
 // muse 的 agent ReAct 是串行 tool loop:每跑 1 个工具就单独成一条 assistant message。
@@ -569,22 +945,49 @@ function actionPhrase(toolName: string, n: number): string {
  *  Claude Code 同样手法 — 渲染层加 sticky delay,实际 tool 执行速度不变。 */
 const ACTIVE_ROW_STICKY_MS = 500;
 
-export function BatchedToolBlock({ uses }: { uses: BatchedToolUse[] }) {
+/** 全展开子项时最多渲染几行,余下用 `(+N more)` 折叠,避免 50+ 项的 batch 把屏幕占满。 */
+const MAX_EXPANDED_ROWS = 5;
+/** 完成态(allDone)默认显示前 N 行 + (+M more) 折叠 — 不再完全隐藏,对齐 Claude Code:
+ *  既视觉紧凑,又能扫一眼看到 agent 跑过什么(尤其 Bash/WebFetch 这种命令)。 */
+const MAX_DONE_ROWS = 3;
+
+export function BatchedToolBlock({
+  uses,
+  lastStartedToolId,
+}: {
+  uses: BatchedToolUse[];
+  /** 最近一次 onToolCallStart 的 tool_use id;用于 "hold 上一个直到下一个真的开始" 语义。
+   *  未提供时回退到 firstPending(下一个没 result 的)。 */
+  lastStartedToolId?: string | null;
+}) {
   // Claude Code 风格 transient 渲染:
-  // - 执行中 → 用灰色 `└` 连接符显示当前正在执行的那一条(最近一个没 result 的 use)
-  // - 全部完成 → 只剩 header,子项隐藏(批次完成后视觉归零,history 区简洁)
-  // - **abort 中断**(Esc)→ 整批展开所有子项,让用户看清楚 muse 当时干到哪一步
-  //   被打断,避免"消失感"(只剩干瘪 header 看上去像内容被删了)
-  const realActiveIdx = uses.findIndex((u) => !u.result);
-  // sticky displayIdx:实际 active 切换后延迟 ACTIVE_ROW_STICKY_MS 再切显示,
-  // 保证每个 active row 至少可见这么长时间(连续快切时旧的 setTimeout 被 clear,
-  // 直接跳到最终值;首次切换 + 完成隐藏都走同一延迟)。
-  const [displayIdx, setDisplayIdx] = useState(realActiveIdx);
+  // - 全部完成 → 显示前 MAX_DONE_ROWS 行 + `(+N more)` 折叠提示(对齐 Claude Code:
+  //   既视觉紧凑,又能扫一眼看到 agent 跑过什么命令/读了什么文件)
+  // - 执行中 → 用灰色 `└` 显示 active row;**hold 上一个直到下一个真的开始**:
+  //   target 优先匹配 lastStartedToolId(最近一次 onToolCallStart 的 id),避免
+  //   firstPending 立刻跳到 LLM 还在思考 / 等权限的下一个 tool。未拿到 id 时
+  //   (初始 / Static 包的历史 batch)回退 firstPending。
+  // - **abort 中断**(Esc)→ 整批展开 MAX_EXPANDED_ROWS 行 + 折叠,让用户看清楚
+  //   muse 当时干到哪一步被打断,避免"消失感"
+  const allDone = uses.every((u) => u.result);
+  let targetIdx = -1;
+  if (!allDone) {
+    if (lastStartedToolId) {
+      targetIdx = uses.findIndex((u) => u.part.id === lastStartedToolId);
+    }
+    if (targetIdx < 0) {
+      // 没匹配上 → 回退到 firstPending 给个初始显示
+      targetIdx = uses.findIndex((u) => !u.result);
+    }
+  }
+  // sticky displayIdx:targetIdx 切换后延迟 ACTIVE_ROW_STICKY_MS 再生效,
+  // 保证每个 active row 至少可见这么长时间(连续快切时旧 timeout 被 clear,直接跳终值)。
+  const [displayIdx, setDisplayIdx] = useState(targetIdx);
   useEffect(() => {
-    if (realActiveIdx === displayIdx) return;
-    const t = setTimeout(() => setDisplayIdx(realActiveIdx), ACTIVE_ROW_STICKY_MS);
+    if (targetIdx === displayIdx) return;
+    const t = setTimeout(() => setDisplayIdx(targetIdx), ACTIVE_ROW_STICKY_MS);
     return () => clearTimeout(t);
-  }, [realActiveIdx, displayIdx]);
+  }, [targetIdx, displayIdx]);
   const activeIdx = displayIdx >= 0 && displayIdx < uses.length ? displayIdx : -1;
   const wasInterrupted = uses.some(
     (u) => u.result?.content?.includes("Interrupted by user (Esc)"),
@@ -597,15 +1000,34 @@ export function BatchedToolBlock({ uses }: { uses: BatchedToolUse[] }) {
       </Box>
       {wasInterrupted ? (
         <Box flexDirection="column" marginLeft={2}>
-          {uses.map((u, i) => (
+          {uses.slice(0, MAX_EXPANDED_ROWS).map((u, i) => (
             <BatchedToolRow key={i} use={u} />
           ))}
+          {uses.length > MAX_EXPANDED_ROWS && (
+            <Box flexDirection="row">
+              <Text dimColor>{"  "}</Text>
+              <Text dimColor>{`(+${uses.length - MAX_EXPANDED_ROWS} more)`}</Text>
+            </Box>
+          )}
         </Box>
       ) : activeIdx >= 0 ? (
         <Box flexDirection="column" marginLeft={2}>
           <BatchedToolRow use={uses[activeIdx]} />
         </Box>
-      ) : null}
+      ) : (
+        // 完成态:显示前 MAX_DONE_ROWS 行 + `(+N more)` 折叠(对齐 Claude Code)
+        <Box flexDirection="column" marginLeft={2}>
+          {uses.slice(0, MAX_DONE_ROWS).map((u, i) => (
+            <BatchedToolRow key={i} use={u} />
+          ))}
+          {uses.length > MAX_DONE_ROWS && (
+            <Box flexDirection="row">
+              <Text dimColor>{"  "}</Text>
+              <Text dimColor>{`(+${uses.length - MAX_DONE_ROWS} more)`}</Text>
+            </Box>
+          )}
+        </Box>
+      )}
     </Box>
   );
 }

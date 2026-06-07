@@ -27,6 +27,15 @@ export interface RequestServices {
   provider: string;
   /** SessionStart hook 返回的额外 system prompt 片段(append 到 base 末尾)。 */
   extraSystemPrompt?: string;
+  /** 当前模型可见上下文窗口(token 数);trim-history / budget-guard 用。
+   *  未提供时这两个 stage 自动 skip。 */
+  contextWindow?: number;
+  /** 主动触发上下文压缩(budget-guard 用)。
+   *  返回压缩后的新 messages。Agent 注入时会同步更新 agent.messages。
+   *  抛错 = 压缩失败(LLM 调用失败 / hook block / 无可压缩内容等)。 */
+  compact?: (abortSignal?: AbortSignal) => Promise<import("../../types/index.js").Message[]>;
+  /** 本轮 abortSignal,透给 compact 用。 */
+  abortSignal?: AbortSignal;
 }
 
 export interface RequestCtx {

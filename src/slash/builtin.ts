@@ -55,11 +55,32 @@ const CLEAR: SlashCommand = {
 
 // ----- /exit -----
 
+const FAREWELLS = [
+  "Goodbye",
+  "Bye",
+  "Bye, see ya",
+  "See you later",
+  "Take care",
+  "Catch you later",
+  "Adios",
+  "Ciao",
+  "Later",
+  "Until next time",
+] as const;
+
+function randomFarewell(): string {
+  return FAREWELLS[Math.floor(Math.random() * FAREWELLS.length)];
+}
+
 const EXIT: SlashCommand = {
   name: "exit",
   description: "exit Muse",
   execute() {
-    return { exit: true };
+    // display + exit:app.tsx 在 exit 分支把 display 当 assistant message append,
+    // 延后 exit() 让 Ink commit 一帧含告别语的 frame 后再 unmount。
+    // Ink unmount 不主动清屏 — 最后一帧留在终端,告别语跟在 assistant 消息后、
+    // 输入框之前(视觉与模型回复一致)。
+    return { display: randomFarewell(), exit: true };
   },
 };
 
