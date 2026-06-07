@@ -12,6 +12,40 @@ export interface TextPart {
   text: string;
 }
 
+/**
+ * 通过 @file 引用进来的纯文本文件附件。
+ *
+ * 设计:作为独立 part 而不是 wrap XML 拼进 text,目的让 PDF / audio / video 等
+ * 后续多模态 part 进来时不动协议层(模块设计/消息预处理工程/设计.md 等讨论 §1)。
+ *
+ * 下游 LLM client 视 provider 能力序列化:
+ *   - 支持 file part 的 provider → 原生 file part
+ *   - 不支持的 provider → 退化为 text wrap `<file path="...">…</file>`
+ */
+export interface FilePart {
+  type: "file";
+  path: string;
+  /** RFC 6838 mime type;text/x-typescript / text/markdown 等;不强约束,信息性。 */
+  mimeType?: string;
+  /** 文本内容(utf-8)。 */
+  text: string;
+}
+
+/**
+ * 图片附件(@image.png 或拖拽 / 粘贴)。
+ *
+ * 用 base64 data URI 模式存,序列化为 OpenAI 兼容协议的 image_url part。
+ */
+export interface ImagePart {
+  type: "image";
+  /** image/png / image/jpeg / image/webp / image/gif。 */
+  mediaType: string;
+  /** base64 编码的图片字节。 */
+  data: string;
+  /** 来源路径(若有),用于 UI 展示与 LLM 上下文。 */
+  path?: string;
+}
+
 export interface ToolUsePart {
   type: "tool_use";
   id: string;
@@ -26,7 +60,7 @@ export interface ToolResultPart {
   isError?: boolean;
 }
 
-export type ContentPart = TextPart | ToolUsePart | ToolResultPart;
+export type ContentPart = TextPart | FilePart | ImagePart | ToolUsePart | ToolResultPart;
 
 export interface SystemMessage {
   role: "system";

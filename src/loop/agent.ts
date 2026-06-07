@@ -1,24 +1,78 @@
 /**
- * Agent loop：单循环 ReAct。
+ * Agent loop:单循环 ReAct。
  *
  *   loop:
+ *     RequestPipeline.run(ctx)       — 拼装 systemPrompt + tools(stage 化预处理)
  *     llm.stream(messages, tools)
  *       → emit text → 累计 assistant 消息
  *       → 收到 tool_call → 累计
  *       → finish
  *     if no tool_calls: break
  *     for each tool_call:
- *       check permission → execute → push tool result
+ *       PreToolUse hook(可阻断 / 改写 args)
+ *       check permission → execute
+ *       ResultPipeline.run(ctx)      — 截断 / 检测二进制 / summary / 错误归一化
+ *       PostToolUse hook(可改写 content / summary)
+ *       push tool result
+ *
+ * 设计文档:模块设计/消息预处理工程/设计.md §4.2 / §4.3。
  */
 
 import type { LLMClient, LLMEvent } from "../llm/types.js";
 import type { Message, AssistantMessage, ContentPart, ToolUsePart, TokenUsage } from "../types/index.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { ToolContext } from "../tools/types.js";
+import type { ToolContext, ToolExecuteResult } from "../tools/types.js";
 import type { PermissionGate, Decision, PermissionDecision } from "../permission/index.js";
 import type { Session } from "../session/jsonl.js";
 import { TodoStore } from "./todos.js";
 import { log } from "../log/index.js";
+import type { Pipeline } from "../preprocess/pipeline.js";
+import { PipelineBlockedError } from "../preprocess/pipeline.js";
+import type { RequestCtx, RequestServices } from "../preprocess/request/index.js";
+import { createRequestCtx } from "../preprocess/request/index.js";
+import type { ResultCtx, ResultPreprocessSettings } from "../preprocess/result/index.js";
+import { createResultCtx } from "../preprocess/result/index.js";
+import type { HooksConfig } from "../preprocess/hooks.js";
+import { runHooks } from "../preprocess/hooks.js";
+import type { PreprocessLogger } from "../preprocess/types.js";
+
+/**
+ * 合并 0..N 个 AbortSignal:任一 aborted → 返回的 signal aborted。
+ * 全 undefined 时返 undefined,保持 LLM stream 的"无中断"行为不变。
+ */
+function combineSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const live = signals.filter((s): s is AbortSignal => !!s);
+  if (live.length === 0) return undefined;
+  if (live.length === 1) return live[0];
+  const combined = new AbortController();
+  for (const s of live) {
+    if (s.aborted) {
+      combined.abort(s.reason);
+      break;
+    }
+    s.addEventListener("abort", () => combined.abort(s.reason), { once: true });
+  }
+  return combined.signal;
+}
+
+/**
+ * 判断是否 AbortError(node fetch / execa / undici / spec / Vercel SDK 几种风格都覆盖)。
+ *
+ * 之前用 name === "AbortError" 漏检了 Vercel AI SDK 在 abort 时抛的
+ * "This operation was aborted" 错(name 是 APICallError / DOMException 等),
+ * 加 message 关键字兜底。
+ */
+function isAbortError(err: unknown): boolean {
+  if (!err) return false;
+  if (err instanceof Error) {
+    if (err.name === "AbortError") return true;
+    const code = (err as Error & { code?: string }).code;
+    if (code === "ABORT_ERR" || code === "ECANCELED") return true;
+    const msg = err.message.toLowerCase();
+    if (msg.includes("aborted") || msg.includes("cancelled") || msg.includes("canceled")) return true;
+  }
+  return false;
+}
 
 export interface AgentEvents {
   onText?: (delta: string) => void;
@@ -26,19 +80,26 @@ export interface AgentEvents {
   onToolCallArgs?: (id: string, args: unknown) => void;
   onToolResult?: (id: string, name: string, content: string, isError: boolean, summary?: string) => void;
   onPermissionRequest?: (toolName: string, args: unknown, summary: string) => Promise<PermissionDecision>;
-  /** AskUserQuestion 工具调用时触发；resolve 把整批答案数组回填给工具。 */
   onAskQuestions?: (
     questions: import("../tools/builtin/ask-user-question.js").AskQuestion[],
   ) => Promise<import("../tools/builtin/ask-user-question.js").AskQuestionResponse[]>;
   onUsage?: (usage: TokenUsage) => void;
+  /**
+   * 流式开始前 chars/4 估算 input tokens,推给 UI 让 StatusLine/ctx 立刻显示。
+   * 与 onUsage 解耦:这是"本轮 ctx 占用快照"信号,不应进 session 累计(避免重复计费)。
+   * 真实 finish usage 到达时 onUsage 会再用真实 inputTokens **覆盖**(不是累加)turn 快照。
+   */
+  onEstimate?: (inputTokens: number) => void;
   onError?: (error: Error) => void;
   /**
-   * 一段 assistant 流结束、assistantMessage 已 push 进 messages，但工具还没开始执行时触发。
+   * 一段 assistant 流结束、assistantMessage 已 push 进 messages,但工具还没开始执行时触发。
    * 用于 UI 立刻把这一批 tool_use calls 显示出来——避免"流完 → 第一个 result 到达"
-   * 之间用户面对空屏。turn 直接结束（无 tool calls）的场景不会触发，走 onTurnEnd。
+   * 之间用户面对空屏。turn 直接结束(无 tool calls)的场景不会触发,走 onTurnEnd。
    */
   onAssistantTurn?: () => void;
   onTurnEnd?: () => void;
+  /** Pipeline 被 hook 阻断 / 致命错误时触发。 */
+  onBlocked?: (reason: string) => void;
 }
 
 export interface AgentContext {
@@ -47,16 +108,66 @@ export interface AgentContext {
   permissions: PermissionGate;
   session: Session;
   cwd: string;
-  systemPrompt: string;
+  /**
+   * Legacy system prompt(向后兼容 runOneShot / 测试)。
+   * 与 requestPipeline 互斥:有 pipeline 时优先 pipeline,无 pipeline 时回退到 systemPrompt + 内置 mode filter。
+   */
+  systemPrompt?: string;
+  /** 注入式预处理:每轮 LLM 请求前跑。 */
+  requestPipeline?: Pipeline<RequestCtx>;
+  /** 与 requestPipeline 配套的 services(memoryIndex / provider / lang 等)。 */
+  requestServices?: RequestServices;
+  /** 工具结果后处理 pipeline。 */
+  resultPipeline?: Pipeline<ResultCtx>;
+  /** result pipeline 的运行时设置(每轮统一)。 */
+  resultSettings?: ResultPreprocessSettings;
+  /** 用户配置的 hooks(MVP 只跑 PreToolUse / PostToolUse)。 */
+  hooks?: HooksConfig;
+  /** 预处理日志器,串到 pino。 */
+  hookLogger?: PreprocessLogger;
+  /** Pipeline disable 列表(来自 settings.preprocess.disable)。 */
+  pipelineDisable?: ReadonlyArray<string>;
   abortSignal?: AbortSignal;
   events?: AgentEvents;
+  /** 注入式 TodoStore:与 requestServices.todos 共享同一实例。 */
+  todos?: TodoStore;
 }
 
 export class Agent {
   private messages: Message[] = [];
-  readonly todos = new TodoStore();
+  readonly todos: TodoStore;
+  /** 本轮 stream 发出时的 input tokens 估算值;finish 真实 usage 回来时减去,补差量给 UI。
+   *  为什么:OpenAI 兼容 stream 的 usage 只在 finish 下发,期间 StatusLine 拿不到 token 数;
+   *  先用 chars/4 估算并即刻推一次 onUsage,流式中就能显示 "↑ N tokens",真实值到达时无缝覆盖。 */
+  private lastEstimateInputTokens = 0;
+  /** 当前轮次的 abort signal(runTurn 开始时设,结束清);runToolCall 读它给 execa 等用。 */
+  private turnAbortSignal?: AbortSignal;
 
-  constructor(private ctx: AgentContext) {}
+  constructor(private ctx: AgentContext) {
+    this.todos = ctx.todos ?? new TodoStore();
+  }
+
+  /** 粗略估算 input tokens:chars/4 是 OpenAI 系常用近似;中文偏低但作为流式中实时占位足够。 */
+  private estimateInputTokens(
+    messages: Message[],
+    systemPrompt: string,
+    tools: import("../types/index.js").ToolDefinition[],
+  ): number {
+    let chars = systemPrompt.length;
+    for (const m of messages) {
+      if (typeof m.content === "string") {
+        chars += m.content.length;
+      } else if (Array.isArray(m.content)) {
+        for (const p of m.content) {
+          if (p.type === "text") chars += (p.text ?? "").length;
+          else if (p.type === "tool_use") chars += JSON.stringify(p.args ?? {}).length + p.name.length;
+          else if (p.type === "file" || p.type === "image") chars += JSON.stringify(p).length;
+        }
+      }
+    }
+    for (const t of tools) chars += JSON.stringify(t).length;
+    return Math.max(0, Math.floor(chars / 4));
+  }
 
   getMessages(): Message[] {
     return this.messages;
@@ -66,44 +177,99 @@ export class Agent {
     this.messages = msgs;
   }
 
-  /** 执行一次完整的"用户输入 → 助手响应（含工具循环） → 等待下一轮输入"。 */
-  async runTurn(userInput: string): Promise<void> {
+  /**
+   * 执行一次完整的"用户输入 → 助手响应(含工具循环) → 等待下一轮输入"。
+   *
+   * userInput 可以是:
+   *   - string:纯文本(向后兼容,无附件场景)
+   *   - ContentPart[]:多 part 内容(text + file/image 附件)
+   *
+   * abortSignal:本轮专属信号(每轮新建,App.handleSubmit 传入);Esc 触发 abort
+   * 时立刻打断 LLM stream + execa 工具 + 等待循环。优先级高于 ctx.abortSignal
+   * (后者是进程级 / 启动时签名,用于全局退出)。
+   */
+  async runTurn(userInput: string | ContentPart[], abortSignal?: AbortSignal): Promise<void> {
+    const turnSignal = combineSignals(abortSignal, this.ctx.abortSignal);
+    this.turnAbortSignal = turnSignal;
     const userMessage: Message = { role: "user", content: userInput };
     this.messages.push(userMessage);
     await this.ctx.session.append({ type: "message", time: new Date().toISOString(), message: userMessage });
 
-    // 内部循环：工具调用可能多轮
+    // 内部循环:工具调用可能多轮
     while (true) {
-      const mode = this.ctx.permissions.getMode();
-      const tools = this.ctx.tools.toLLMDefinitions(
-        mode === "plan" ? (t) => t.permission === "read" : undefined,
-      );
-      // 每轮把当前 todos 注入 system prompt 末尾，让 LLM 看到自己写的清单
-      const todoSection = this.todos.toPromptSection();
-      const systemPrompt = todoSection
-        ? `${this.ctx.systemPrompt}\n\n${todoSection}`
-        : this.ctx.systemPrompt;
+      let { systemPrompt, tools } = await this.buildRequest();
+
+      // PreLLMRequest hook 可改写 messages / systemPrompt / tools 或 block
+      let messagesForStream = this.messages;
+      try {
+        const hookOut = await runHooks(
+          "PreLLMRequest",
+          { messages: this.messages, systemPrompt, tools, modelId: this.ctx.llm.model },
+          this.ctx.hooks,
+          this.ctx.hookLogger,
+        );
+        if (typeof hookOut.systemPrompt === "string") systemPrompt = hookOut.systemPrompt;
+        if (Array.isArray(hookOut.messages)) messagesForStream = hookOut.messages as Message[];
+        if (Array.isArray(hookOut.tools)) tools = hookOut.tools as import("../types/index.js").ToolDefinition[];
+      } catch (err) {
+        if (err instanceof PipelineBlockedError) {
+          this.ctx.events?.onBlocked?.(err.reason);
+          this.ctx.events?.onError?.(new Error(`PreLLMRequest blocked: ${err.reason}`));
+          return;
+        }
+        throw err;
+      }
+
+      // 流式开始前用 chars/4 估算 input tokens 即刻推给 UI,让 StatusLine 立刻显示。
+      // 走 onEstimate(不是 onUsage)避免污染 session 累计计费;finish 真实 usage 到达后
+      // 上层 reducer 会用真实 inputTokens 覆盖本轮 ctx 快照(不累加)。
+      const estimate = this.estimateInputTokens(messagesForStream, systemPrompt, tools);
+      this.lastEstimateInputTokens = estimate;
+      this.ctx.events?.onEstimate?.(estimate);
+
       const stream = this.ctx.llm.stream({
-        messages: this.messages,
+        messages: messagesForStream,
         tools,
         systemPrompt,
-        abortSignal: this.ctx.abortSignal,
+        abortSignal: turnSignal,
       });
 
       const assistantParts: ContentPart[] = [];
       const toolCallsToRun: ToolUsePart[] = [];
       let lastError: Error | undefined;
 
-      for await (const ev of stream) {
-        this.handleEvent(ev, assistantParts, toolCallsToRun, (e) => {
-          lastError = e;
-        });
-        if (lastError) break;
+      try {
+        for await (const ev of stream) {
+          this.handleEvent(ev, assistantParts, toolCallsToRun, (e) => {
+            lastError = e;
+          });
+          if (lastError) break;
+          if (turnSignal?.aborted) break;
+        }
+      } catch (err) {
+        if (isAbortError(err) || turnSignal?.aborted) {
+          // Esc 触发的优雅中断:保留已生成的 assistant 文本 + 任何已完成的 tool_use 在 history,
+          // 但**不**进入工具执行环节(toolCallsToRun 直接清空)。让 UI 看到"我已经说了一半"。
+          this.persistInterruptedAssistant(assistantParts);
+          this.ctx.events?.onTurnEnd?.();
+          this.turnAbortSignal = undefined;
+          return;
+        }
+        throw err;
       }
 
       if (lastError) {
         this.ctx.events?.onError?.(lastError);
         log.error("agent stream error", { msg: lastError.message });
+        this.turnAbortSignal = undefined;
+        return;
+      }
+
+      // Esc 在 stream loop 内 break 但未抛错(turnSignal.aborted)
+      if (turnSignal?.aborted) {
+        this.persistInterruptedAssistant(assistantParts);
+        this.ctx.events?.onTurnEnd?.();
+        this.turnAbortSignal = undefined;
         return;
       }
 
@@ -112,19 +278,79 @@ export class Agent {
       this.messages.push(assistantMessage);
       await this.ctx.session.append({ type: "message", time: new Date().toISOString(), message: assistantMessage });
 
+      // PostLLMResponse hook(不阻断,仅审计 / 镜像;返回值忽略)
+      const assistantText = assistantParts
+        .filter((p): p is { type: "text"; text: string } => p.type === "text")
+        .map((p) => p.text)
+        .join("");
+      const toolCalls = toolCallsToRun.map((t) => ({ id: t.id, name: t.name, args: t.args }));
+      try {
+        await runHooks(
+          "PostLLMResponse",
+          { assistantText, toolCalls },
+          this.ctx.hooks,
+          this.ctx.hookLogger,
+        );
+      } catch (err) {
+        if (err instanceof PipelineBlockedError) {
+          log.warn("PostLLMResponse tried to block, ignored", { reason: err.reason });
+        } else {
+          throw err;
+        }
+      }
+
       if (toolCallsToRun.length === 0) {
         this.ctx.events?.onTurnEnd?.();
+        this.turnAbortSignal = undefined;
         return;
       }
 
       // 流刚结束、tool 还没跑——给 UI 一个钩子立刻展示这一批 calls
       this.ctx.events?.onAssistantTurn?.();
 
-      // 执行工具调用
+      // 执行工具调用;每个工具开始前再检查 abort,避免 stream 中断后还硬跑工具。
+      // 每个工具跑完后 yield 一次 event loop:让 React commit + Ink paint 完成,
+      // 避免快速本地工具(ls/cat 等 ~30ms)让 React 18 auto-batching 把多次 history_set
+      // 合并成单次 commit——那样用户会错过 active row 切换的全部中间帧。
       for (const call of toolCallsToRun) {
-        await this.runToolCall(call);
+        if (turnSignal?.aborted) {
+          this.recordToolResult(call.id, call.name, `Interrupted by user (Esc).`, true);
+        } else {
+          await this.runToolCall(call);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      }
+      // 工具循环跑完后若已 abort,本轮直接收尾,不再开新一轮 LLM stream
+      if (turnSignal?.aborted) {
+        this.ctx.events?.onTurnEnd?.();
+        this.turnAbortSignal = undefined;
+        return;
       }
     }
+  }
+
+  /** 拼装本轮 system prompt + tools。优先走 RequestPipeline,无 pipeline 时回退到 legacy 路径。 */
+  private async buildRequest(): Promise<{ systemPrompt: string; tools: import("../types/index.js").ToolDefinition[] }> {
+    if (this.ctx.requestPipeline && this.ctx.requestServices) {
+      const ctx = createRequestCtx({
+        messages: this.messages,
+        modelId: this.ctx.llm.model,
+        mode: this.ctx.permissions.getMode(),
+        cwd: this.ctx.cwd,
+        services: { ...this.ctx.requestServices, todos: this.todos },
+      });
+      await this.ctx.requestPipeline.run(ctx);
+      return { systemPrompt: ctx.systemPrompt, tools: ctx.tools };
+    }
+    // Legacy fallback
+    const mode = this.ctx.permissions.getMode();
+    const tools = this.ctx.tools.toLLMDefinitions(
+      mode === "plan" ? (t) => t.permission === "read" : undefined,
+    );
+    const todoSection = this.todos.toPromptSection();
+    const base = this.ctx.systemPrompt ?? "";
+    const systemPrompt = todoSection ? `${base}\n\n${todoSection}` : base;
+    return { systemPrompt, tools };
   }
 
   private handleEvent(
@@ -135,7 +361,6 @@ export class Agent {
   ): void {
     switch (ev.type) {
       case "text":
-        // 合并到最后一个 text part 或新增
         {
           const last = assistantParts[assistantParts.length - 1];
           if (last && last.type === "text") {
@@ -161,21 +386,45 @@ export class Agent {
 
       case "finish":
         if (ev.usage) {
-          this.ctx.events?.onUsage?.(ev.usage);
+          // 推 delta:已经通过 estimate 注入了 lastEstimateInputTokens,这里只补 (real - estimate);
+          // outputTokens 没估算过,直接推真实值。
+          const adjusted: TokenUsage = {
+            inputTokens: ev.usage.inputTokens - this.lastEstimateInputTokens,
+            outputTokens: ev.usage.outputTokens,
+            totalTokens: ev.usage.totalTokens - this.lastEstimateInputTokens,
+          };
+          this.ctx.events?.onUsage?.(adjusted);
           this.ctx.session.append({
             type: "usage",
             time: new Date().toISOString(),
-            usage: ev.usage,
+            usage: ev.usage, // session 写真实值,不写 estimate
             provider: this.ctx.llm.providerName,
             model: this.ctx.llm.model,
           });
         }
+        this.lastEstimateInputTokens = 0; // 不论 usage 是否回都复位,下一轮 stream 重新估
         break;
 
       case "error":
         onError(ev.error);
         break;
     }
+  }
+
+  /** Esc 中断时:把"已经流出来"的 assistant 内容存进 history,标 [interrupted] 后缀。 */
+  private persistInterruptedAssistant(parts: ContentPart[]): void {
+    const cleanedParts: ContentPart[] = parts.filter((p) => p.type !== "tool_use");
+    // 在最后一段 text 末尾追加 [interrupted] 标识;无 text 时新建一段
+    const lastIdx = cleanedParts.length - 1;
+    if (lastIdx >= 0 && cleanedParts[lastIdx].type === "text") {
+      const t = cleanedParts[lastIdx] as { type: "text"; text: string };
+      cleanedParts[lastIdx] = { type: "text", text: `${t.text}\n\n[interrupted]` };
+    } else {
+      cleanedParts.push({ type: "text", text: "[interrupted]" });
+    }
+    const assistantMessage: AssistantMessage = { role: "assistant", content: cleanedParts };
+    this.messages.push(assistantMessage);
+    this.ctx.session.append({ type: "message", time: new Date().toISOString(), message: assistantMessage });
   }
 
   private async runToolCall(call: ToolUsePart): Promise<void> {
@@ -193,7 +442,6 @@ export class Agent {
       permission: tool.permission,
     });
 
-    let approved = decision === "allow";
     if (decision === "deny") {
       const reason =
         this.ctx.permissions.getMode() === "plan"
@@ -212,12 +460,30 @@ export class Agent {
       if (userDecision === "session_allow") {
         this.ctx.permissions.allowForSession(call.name);
       }
-      approved = true;
+    }
+
+    // PreToolUse hook 可改写 args 或阻断
+    let effectiveArgs = call.args;
+    try {
+      const hookOut = await runHooks(
+        "PreToolUse",
+        { toolName: call.name, args: effectiveArgs },
+        this.ctx.hooks,
+        this.ctx.hookLogger,
+      );
+      if (hookOut.args !== undefined) effectiveArgs = hookOut.args;
+    } catch (err) {
+      if (err instanceof PipelineBlockedError) {
+        this.ctx.events?.onBlocked?.(err.reason);
+        this.recordToolResult(call.id, call.name, `Blocked by PreToolUse hook: ${err.reason}`, true);
+        return;
+      }
+      throw err;
     }
 
     const toolCtx: ToolContext = {
       cwd: this.ctx.cwd,
-      abortSignal: this.ctx.abortSignal,
+      abortSignal: this.turnAbortSignal ?? this.ctx.abortSignal,
       askPermission: async () => true, // 已在外层处理
       todos: this.todos,
       askQuestions: this.ctx.events?.onAskQuestions
@@ -225,8 +491,77 @@ export class Agent {
         : undefined,
     };
 
-    const result = await this.ctx.tools.execute(call.name, call.args, toolCtx);
-    this.recordToolResult(call.id, call.name, result.content, result.isError ?? false, result.summary, result.diff, result.kind);
+    const raw: ToolExecuteResult = await this.ctx.tools.execute(call.name, effectiveArgs, toolCtx);
+
+    // ResultPipeline 后处理 + PostToolUse hook
+    const processed = await this.postProcessResult({
+      toolName: call.name,
+      toolUseId: call.id,
+      args: effectiveArgs,
+      raw,
+    });
+
+    this.recordToolResult(
+      call.id,
+      call.name,
+      processed.content,
+      processed.isError,
+      processed.summary,
+      processed.diff,
+      processed.kind,
+    );
+  }
+
+  private async postProcessResult(input: {
+    toolName: string;
+    toolUseId: string;
+    args: unknown;
+    raw: ToolExecuteResult;
+  }): Promise<{ content: string; isError: boolean; summary?: string; diff?: string; kind?: "success" | "error" | "warn" }> {
+    let content = input.raw.content;
+    let summary = input.raw.summary;
+    let diff = input.raw.diff;
+    const isError = input.raw.isError ?? false;
+    let kind = input.raw.kind;
+
+    if (this.ctx.resultPipeline) {
+      const rctx = createResultCtx({
+        toolName: input.toolName,
+        toolUseId: input.toolUseId,
+        args: input.args,
+        raw: input.raw,
+        settings: this.ctx.resultSettings,
+      });
+      try {
+        await this.ctx.resultPipeline.run(rctx);
+        content = rctx.content;
+        summary = rctx.summary;
+        diff = rctx.diff;
+      } catch (err) {
+        log.warn("result pipeline error", { msg: (err as Error).message });
+      }
+    }
+
+    // PostToolUse hook(默认不阻断,仅改写 content / summary)
+    try {
+      const hookOut = await runHooks(
+        "PostToolUse",
+        { toolName: input.toolName, args: input.args, content, summary, isError },
+        this.ctx.hooks,
+        this.ctx.hookLogger,
+      );
+      if (typeof hookOut.content === "string") content = hookOut.content;
+      if (typeof hookOut.summary === "string") summary = hookOut.summary;
+    } catch (err) {
+      if (err instanceof PipelineBlockedError) {
+        // PostToolUse 不允许阻断;降级为告警
+        log.warn("PostToolUse hook tried to block, ignored", { reason: err.reason });
+      } else {
+        throw err;
+      }
+    }
+
+    return { content, isError, summary, diff, kind };
   }
 
   private recordToolResult(

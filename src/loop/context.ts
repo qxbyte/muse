@@ -18,6 +18,9 @@
 
 import type { LLMClient } from "../llm/types.js";
 import type { Message, AssistantMessage, ContentPart } from "../types/index.js";
+import type { HooksConfig } from "../preprocess/hooks.js";
+import { runHooks } from "../preprocess/hooks.js";
+import { PipelineBlockedError } from "../preprocess/pipeline.js";
 
 export interface CompactOptions {
   llm: LLMClient;
@@ -26,6 +29,15 @@ export interface CompactOptions {
   abortSignal?: AbortSignal;
   /** LLM 摘要流式过程中的字符进度回调（每个 text-delta 触发，传累计字符数）。 */
   onProgress?: (charsReceived: number) => void;
+  /** PreCompact / PostCompact hooks 配置。 */
+  hooks?: HooksConfig;
+}
+
+export class CompactBlockedError extends Error {
+  constructor(public readonly reason: string) {
+    super(`compact blocked by PreCompact hook: ${reason}`);
+    this.name = "CompactBlockedError";
+  }
 }
 
 export interface CompactResult {
@@ -54,6 +66,20 @@ export async function compactMessages(
     };
   }
 
+  // PreCompact hook(可 block / 用于审计)
+  try {
+    await runHooks(
+      "PreCompact",
+      { messageCount: messages.length, cutoff, keepRecent },
+      opts.hooks,
+    );
+  } catch (err) {
+    if (err instanceof PipelineBlockedError) {
+      throw new CompactBlockedError(err.reason);
+    }
+    throw err;
+  }
+
   const older = messages.slice(0, cutoff);
   const recent = messages.slice(cutoff);
   const summary = await summarizeConversation(older, opts.llm, opts.abortSignal, opts.onProgress);
@@ -66,6 +92,21 @@ export async function compactMessages(
   };
 
   const newMessages: Message[] = [summaryMessage, ...recent];
+
+  // PostCompact hook(不阻断)
+  try {
+    await runHooks(
+      "PostCompact",
+      { before: messages.length, after: newMessages.length, summary },
+      opts.hooks,
+    );
+  } catch (err) {
+    if (err instanceof PipelineBlockedError) {
+      // PostCompact 不允许 block;降级为 no-op
+    } else {
+      throw err;
+    }
+  }
 
   return {
     newMessages,
@@ -177,8 +218,11 @@ function renderAssistant(msg: AssistantMessage): string {
 }
 
 function flattenContent(parts: ContentPart[]): string {
-  return parts
-    .filter((p): p is { type: "text"; text: string } => p.type === "text")
-    .map((p) => p.text)
-    .join("\n");
+  const out: string[] = [];
+  for (const p of parts) {
+    if (p.type === "text") out.push(p.text);
+    else if (p.type === "file") out.push(`[file: ${p.path}]`);
+    else if (p.type === "image") out.push(`[image: ${p.path ?? p.mediaType}]`);
+  }
+  return out.join("\n");
 }

@@ -17,7 +17,7 @@ import type {
   ProviderConfig,
   StreamOptions,
 } from "../types.js";
-import type { Message, AssistantMessage, ToolDefinition } from "../../types/index.js";
+import type { Message, AssistantMessage, ToolDefinition, ContentPart } from "../../types/index.js";
 import { log, redactApiKey } from "../../log/index.js";
 
 interface OpenAICompatibleProviderOpts {
@@ -33,7 +33,11 @@ const DEFAULT_CAPABILITIES: ModelCapabilities = {
   parallelToolCalls: true,
   vision: false,
   jsonMode: true,
-  maxContextWindow: 32_000,
+  // 没在 models.local.json 显式声明 contextWindow 时的兜底值。
+  // 200k 是 2026 年主流 LLM(GPT-4.1 / Claude / DeepSeek-v3 / Qwen-Plus / GLM-4 等)的
+  // 常见容量,比 32k 兜底更接近真实,避免 ctx% 大幅虚高 / auto-compact 过早触发。
+  // 仍建议在每条 entry 显式写 contextWindow,避免依赖默认值。
+  maxContextWindow: 200_000,
 };
 
 export class OpenAICompatibleClient implements LLMClient {
@@ -174,11 +178,7 @@ function convertMessages(messages: Message[], systemPrompt?: string): CoreMessag
         if (typeof msg.content === "string") {
           result.push({ role: "user", content: msg.content });
         } else {
-          const text = msg.content
-            .filter((p): p is { type: "text"; text: string } => p.type === "text")
-            .map((p) => p.text)
-            .join("\n");
-          result.push({ role: "user", content: text });
+          result.push({ role: "user", content: convertUserParts(msg.content) });
         }
         break;
       case "assistant":
@@ -201,6 +201,50 @@ function convertMessages(messages: Message[], systemPrompt?: string): CoreMessag
     }
   }
   return result;
+}
+
+type UserContent = Extract<CoreMessage, { role: "user" }>["content"];
+type UserPart = Exclude<UserContent, string>[number];
+
+/**
+ * 把 muse 的 user ContentPart[] 转 Vercel AI SDK UserContent。
+ *
+ * 策略:
+ *   - text 直通
+ *   - image → SDK ImagePart(SDK 内部按 provider 翻译为 image_url 等)
+ *   - file → **降级为 text part 用 XML wrap**。原因:OpenAI Chat Completions 协议
+ *     与多数兼容 provider 不支持 file part(只有 Assistants API 才有);把文本文件
+ *     直接 wrap 进 text 在所有 provider 上都能工作,不依赖能力探测。
+ *   - tool_use / tool_result 在 user role 不出现,跳过
+ */
+// 仅为测试导出 — 业务代码通过 convertMessages 间接调用
+export function convertUserParts(parts: ContentPart[]): UserContent {
+  const out: UserPart[] = [];
+  for (const part of parts) {
+    if (part.type === "text") {
+      out.push({ type: "text", text: part.text });
+    } else if (part.type === "image") {
+      out.push({
+        type: "image",
+        // SDK 接受 base64 字符串作为 DataContent
+        image: part.data,
+        mimeType: part.mediaType,
+      });
+    } else if (part.type === "file") {
+      // 退化为 text wrap
+      out.push({
+        type: "text",
+        text: `<file path="${part.path}"${part.mimeType ? ` mimeType="${part.mimeType}"` : ""}>\n${part.text}\n</file>`,
+      });
+    }
+    // tool_use / tool_result 在 user role 不应该出现,丢
+  }
+  if (out.length === 0) return "";
+  // 全 text 时 join 成 string 更紧凑,行为也与 string-content 用户消息等同
+  if (out.every((p) => p.type === "text")) {
+    return (out as Array<{ type: "text"; text: string }>).map((p) => p.text).join("\n\n");
+  }
+  return out;
 }
 
 type AssistantContent = Extract<CoreMessage, { role: "assistant" }>["content"];
