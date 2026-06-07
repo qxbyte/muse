@@ -72,7 +72,43 @@ export const EMBEDDING_PRESETS: Record<string, EmbeddingPreset> = {
     requiresKey: false,
     description: "Ollama bge-m3 — 多语言本地,先 `ollama pull bge-m3`",
   },
+
+  // === local-transformers(@huggingface/transformers,纯本地无 HTTP)===
+  // baseUrl 字段不用,但保留以满足 EmbeddingPreset 类型;factory 通过 preset name 路由
+  "local-bge-zh": {
+    baseUrl: "",
+    model: "Xenova/bge-small-zh-v1.5",
+    dim: 512,
+    requiresKey: false,
+    description: "Local @huggingface/transformers bge-small-zh-v1.5 — 中文,先 `npm i -g @huggingface/transformers`",
+  },
+  "local-bge-en": {
+    baseUrl: "",
+    model: "Xenova/bge-small-en-v1.5",
+    dim: 384,
+    requiresKey: false,
+    description: "Local @huggingface/transformers bge-small-en-v1.5 — 英文,先 `npm i -g @huggingface/transformers`",
+  },
+  "local-minilm": {
+    baseUrl: "",
+    model: "Xenova/all-MiniLM-L6-v2",
+    dim: 384,
+    requiresKey: false,
+    description: "Local @huggingface/transformers all-MiniLM-L6-v2 — 通用多语言,先 `npm i -g @huggingface/transformers`",
+  },
+  "local-bge-m3": {
+    baseUrl: "",
+    model: "Xenova/bge-m3",
+    dim: 1024,
+    requiresKey: false,
+    description: "Local @huggingface/transformers bge-m3 — 多语言强项(大),先 `npm i -g @huggingface/transformers`",
+  },
 };
+
+/** 是 local-transformers 类 preset(name 以 local- 开头)。 */
+export function isLocalTransformersPreset(name: string): boolean {
+  return name.startsWith("local-");
+}
 
 export function getPreset(name: string): EmbeddingPreset | null {
   return EMBEDDING_PRESETS[name] ?? null;

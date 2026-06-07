@@ -200,10 +200,13 @@ describe("preset 表", () => {
     expect(names).toContain("ollama-bge-m3");
   });
 
-  it("每个 preset 都有 baseUrl / model / dim / requiresKey / description", () => {
+  it("每个 preset 都有 model / dim / requiresKey / description(local-* baseUrl 可为空)", () => {
     for (const name of listPresetNames()) {
       const p = getPreset(name)!;
-      expect(p.baseUrl).toBeTruthy();
+      // baseUrl 仅 openai-compatible 系列需要;local-* 不用
+      if (!name.startsWith("local-")) {
+        expect(p.baseUrl).toBeTruthy();
+      }
       expect(p.model).toBeTruthy();
       expect(p.dim).toBeGreaterThan(0);
       expect(typeof p.requiresKey).toBe("boolean");

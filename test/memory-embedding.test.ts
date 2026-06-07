@@ -129,8 +129,8 @@ describe("II-5 — createEmbeddingProvider factory", () => {
     expect(p.id).toMatch(/^hash-bag/);
   });
 
-  it("local-minilm 抛错(留下批,需 @huggingface/transformers)", () => {
-    expect(() => createEmbeddingProvider({ provider: "local-minilm" })).toThrow(/@huggingface\/transformers/);
+  it("local-minilm 缺 model+dim 抛错(提示用 preset)", () => {
+    expect(() => createEmbeddingProvider({ provider: "local-minilm" })).toThrow(/requires model \+ dim/);
   });
 
   it("openai 缺 apiKey 抛错", () => {

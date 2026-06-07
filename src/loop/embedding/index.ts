@@ -18,12 +18,14 @@
 import type { EmbeddingConfig, EmbeddingProvider } from "./types.js";
 import { HashBagEmbeddingProvider } from "./hash-bag.js";
 import { OpenAICompatibleEmbeddingProvider } from "./openai-compatible.js";
-import { getPreset, listPresetNames, EMBEDDING_PRESETS, type EmbeddingPreset } from "./presets.js";
+import { LocalTransformersEmbeddingProvider } from "./local-transformers.js";
+import { getPreset, listPresetNames, isLocalTransformersPreset, EMBEDDING_PRESETS, type EmbeddingPreset } from "./presets.js";
 
 export * from "./types.js";
 export { HashBagEmbeddingProvider, tokenize, cosineSimilarity } from "./hash-bag.js";
 export { OpenAICompatibleEmbeddingProvider } from "./openai-compatible.js";
-export { EMBEDDING_PRESETS, getPreset, listPresetNames, type EmbeddingPreset } from "./presets.js";
+export { LocalTransformersEmbeddingProvider } from "./local-transformers.js";
+export { EMBEDDING_PRESETS, getPreset, listPresetNames, isLocalTransformersPreset, type EmbeddingPreset } from "./presets.js";
 
 /** preset/provider 默认维度跟实际返回维度不匹配。 */
 export class EmbeddingDimMismatchError extends Error {
@@ -76,6 +78,23 @@ export function createEmbeddingProvider(config: ExtendedEmbeddingConfig = {}): E
     baseUrl ??= preset.baseUrl;
     model ??= preset.model;
     dim ??= preset.dim;
+  }
+
+  // local-transformers(@huggingface/transformers):优先识别 preset 前缀
+  if (config.preset && isLocalTransformersPreset(config.preset)) {
+    if (!model) throw new Error(`local-transformers config missing model`);
+    if (!dim) throw new Error(`local-transformers config missing dim`);
+    return new LocalTransformersEmbeddingProvider({ model, dim });
+  }
+
+  // 显式 provider="local-minilm"(兼容);需用户填 model + dim,或转推 preset
+  if (config.provider === "local-minilm") {
+    if (!model || !dim) {
+      throw new Error(
+        `Provider "local-minilm" requires model + dim. Use preset "local-bge-zh" / "local-bge-en" / "local-minilm" / "local-bge-m3" instead, or set model + dim explicitly.`,
+      );
+    }
+    return new LocalTransformersEmbeddingProvider({ model, dim });
   }
 
   // openai-compatible(显式 / 通过 preset)

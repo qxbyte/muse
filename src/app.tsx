@@ -13,6 +13,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { spawn } from "node:child_process";
 import { pickBanner } from "./components/StartupBanner.js";
 import { MessageView, BatchedToolBlock, BATCHABLE_TOOLS, TodoList, extractTodos, extractListTitle, type BatchedToolUse } from "./components/MessageView.js";
 import { PermissionPrompt, type PermissionRequest } from "./components/PermissionPrompt.js";
@@ -808,6 +809,30 @@ export function App({
         new Promise<void>((resolve) => {
           // history 锁定在 /btw 触发的瞬间——后续即使主对话有新消息，/btw 看到的也是当时的快照
           setBtwRequest({ question, history: messagesRef.current, resolve });
+        }),
+      openInEditor: (filePath) =>
+        new Promise<void>((resolve, reject) => {
+          // 让出 TTY 给外部编辑器(vi/vim/nano/code 等)。
+          // Ink 暂停 raw mode → spawn editor with stdio:inherit → 退出后恢复。
+          // vi 系编辑器会接管 stdin/stdout,Ink 自动暂停渲染;退出后 Ink 看到 stdin 恢复 redraw。
+          const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+          try {
+            if (process.stdin.isTTY) process.stdin.setRawMode?.(false);
+          } catch {}
+          const child = spawn(editor, [filePath], { stdio: "inherit" });
+          child.on("exit", (code) => {
+            try {
+              if (process.stdin.isTTY) process.stdin.setRawMode?.(true);
+            } catch {}
+            if (code === 0) resolve();
+            else reject(new Error(`editor "${editor}" exited with code ${code}`));
+          });
+          child.on("error", (err) => {
+            try {
+              if (process.stdin.isTTY) process.stdin.setRawMode?.(true);
+            } catch {}
+            reject(new Error(`editor "${editor}" failed: ${err.message}`));
+          });
         }),
       reloadSettings: async () => {
         const { settings: nextSettings, sources } = await loadSettings(cwd);

@@ -548,12 +548,14 @@ const MEMORY_HELP = [
   `  /memory                              list all memories (default; both scopes)`,
   `  /memory list [--scope <s>]           list (s = project | user | all)`,
   `  /memory view <name> [--scope <s>]    show full content + frontmatter`,
+  `  /memory edit <name> [--scope <s>]    open in $EDITOR; trust auto→verified on save`,
   `  /memory delete <name> [--scope <s>]  remove permanently`,
   `  /memory promote <name>               auto → verified`,
   `  /memory promote-scope <name>         project → user (lift to global scope)`,
   `  /memory trust <name> <level>         set trust (verified | auto;`,
   `                                       trusted reserved for MUSE.md / AGENTS.md)`,
   `  /memory search <query>               vector-based semantic search`,
+  `  /memory diff [--scope <s>]           show memories sorted by updated_at (recent first)`,
   `  /memory diagnose                     show embedding status + config + fix tips`,
   ``,
   `Scopes:`,
@@ -621,6 +623,11 @@ const MEMORY: SlashCommand = {
           if (!query) return { display: `Usage: /memory search <query>` };
           return await memorySearch(ctx.cwd, query);
         }
+        case "diff":
+          return await memoryDiff(ctx.cwd, scope === "all" ? undefined : scope);
+        case "edit":
+          if (!parts[1]) return { display: `Usage: /memory edit <name> [--scope project|user]` };
+          return await memoryEdit(ctx, parts[1], scope === "all" ? undefined : scope);
         case "diagnose":
         case "doctor":
           return await memoryDiagnose(ctx.cwd, ctx.settings);
@@ -811,6 +818,94 @@ async function memoryDiagnose(cwd: string, settings: import("../config/types.js"
   }
 
   return { display: lines.join("\n") };
+}
+
+/** /memory diff: 按 updated_at 降序列出 memory + 人类可读的"X 时间前"标签。 */
+async function memoryDiff(cwd: string, scope?: Scope) {
+  const list = await listMemories(cwd, { scope: scope ?? "all" });
+  if (list.length === 0) {
+    return { display: `(no memories to diff)\n\n${MEMORY_HELP}` };
+  }
+  const now = Date.now();
+  const sorted = list.slice().sort((a, b) => {
+    const ta = Date.parse(a.frontmatter.updated_at);
+    const tb = Date.parse(b.frontmatter.updated_at);
+    return tb - ta;
+  });
+  const lines = sorted.map((m) => {
+    const t = Date.parse(m.frontmatter.updated_at);
+    const ago = formatTimeAgo(now - t);
+    const trustTag = `[${m.frontmatter.trust}]`.padEnd(11);
+    const scopeTag = `[${m.scope}]`.padEnd(10);
+    return `  ${ago.padEnd(20)} ${trustTag} ${scopeTag} ${m.frontmatter.name}  — ${m.frontmatter.description}`;
+  });
+  return {
+    display:
+      `Memories sorted by updated_at (most recent first):\n\n${lines.join("\n")}\n\n` +
+      `Tip: use /memory view <name> for full content; /memory edit <name> to open in $EDITOR.`,
+  };
+}
+
+function formatTimeAgo(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "(unknown)";
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const days = Math.floor(hr / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(months / 12)}y ago`;
+}
+
+/** /memory edit: 在 $VISUAL || $EDITOR || vi 中打开 memory 文件;退出后自动升 auto → verified。 */
+async function memoryEdit(ctx: import("./types.js").SlashCommandContext, name: string, scope?: Scope) {
+  // 找文件并校验存在
+  const file = await readMemory(ctx.cwd, name, scope);
+  const before = file.frontmatter.updated_at;
+  const beforeBody = file.body;
+
+  try {
+    await ctx.actions.openInEditor(file.filePath);
+  } catch (err) {
+    return { display: `Editor failed: ${(err as Error).message}` };
+  }
+
+  // 重读检查变化
+  let after;
+  try {
+    after = await readMemory(ctx.cwd, name, file.scope);
+  } catch (err) {
+    return { display: `Memory "${name}" no longer exists after edit (deleted or renamed).` };
+  }
+
+  const changed = after.frontmatter.updated_at !== before || after.body !== beforeBody;
+
+  if (!changed) {
+    return {
+      display: `No changes to "${name}" (scope=${file.scope}).`,
+    };
+  }
+
+  // 文件被改了 — 如果原 trust 是 auto,自动升 verified
+  let trustNote = "";
+  if (after.frontmatter.trust === "auto") {
+    try {
+      await setMemoryTrust(ctx.cwd, name, "verified", "user-edit", file.scope);
+      trustNote = "\n  trust: auto → verified (user edit)";
+    } catch (err) {
+      trustNote = `\n  trust upgrade failed: ${(err as Error).message}`;
+    }
+  }
+
+  return {
+    display:
+      `Saved memory "${name}" (scope=${file.scope})${trustNote}\n` +
+      `  → ${file.filePath}`,
+  };
 }
 
 async function memorySearch(cwd: string, query: string) {
