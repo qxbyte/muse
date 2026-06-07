@@ -14,6 +14,12 @@ export interface RequestPreprocessSettings {
   trimHistory?: { enabled?: boolean; budgetRatio?: number };
   budgetGuard?: { enabled?: boolean; budgetRatio?: number };
   redact?: { enabled?: boolean };
+  /** I-3 stale tool result clearing。默认开,keepRecentTurns=3,clearTools=[Read/Grep/Glob]。 */
+  clearStaleToolResults?: {
+    enabled?: boolean;
+    keepRecentTurns?: number;
+    clearTools?: string[];
+  };
 }
 
 export interface RequestServices {
