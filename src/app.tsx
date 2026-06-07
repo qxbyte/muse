@@ -8,13 +8,13 @@
 
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Box, Static, Text, useApp, useInput, useStdout } from "ink";
-import { BgTextInput } from "./components/BgTextInput.js";
+import { BgTextInput, stringWidth } from "./components/BgTextInput.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pickBanner } from "./components/StartupBanner.js";
-import { MessageView, BatchedToolBlock, type BatchedToolUse } from "./components/MessageView.js";
+import { MessageView, BatchedToolBlock, BATCHABLE_TOOLS, TodoList, extractTodos, extractListTitle, type BatchedToolUse } from "./components/MessageView.js";
 import { PermissionPrompt, type PermissionRequest } from "./components/PermissionPrompt.js";
 import { ModelSelector, type ModelPickerRequest } from "./components/ModelSelector.js";
 import { SessionSelector, type SessionPickerRequest } from "./components/SessionSelector.js";
@@ -28,6 +28,7 @@ import { FooterStatus } from "./components/FooterStatus.js";
 import { ProgressBanner, type ProgressState } from "./components/ProgressBanner.js";
 import { StatusLine } from "./components/StatusLine.js";
 import { DOT } from "./components/MessageView.js";
+import { StreamingMarkdown } from "./components/StreamingMarkdown.js";
 import { setTerminalTitle, resetTerminalTitle } from "./ui/termTitle.js";
 import type { LLMClient } from "./llm/types.js";
 import { createLLMClient, createLLMClientFromModelEntry, setActiveModelEnv } from "./llm/client.js";
@@ -78,6 +79,11 @@ interface UIState {
   stoppedNote: string | null;
   /** 当前正在跑的工具名（onToolCallStart 设置；下一次 stream_delta 或 turn_end 清空）。 */
   runningTool: string | null;
+  /** 最近一次 onToolCallStart 的 tool_use id;BatchedToolBlock 据此选 active row。
+   *  语义:"hold 上一个直到下一个真的开始"——LLM 思考 / 等权限 / hook 期间继续显示
+   *  最近一次开始执行过的 row,避免 firstPending 立刻跳到下一个未启动的工具。
+   *  user_submit 时清零(新 turn 不复用旧 id)。 */
+  lastStartedToolId: string | null;
   /** session 累计 token（/cost 用），不是本轮快照——本轮快照走 turn* 引用 */
   inputTokens: number;
   outputTokens: number;
@@ -91,6 +97,14 @@ interface UIState {
   /** history[0..stableUntilIdx-1] 已属过往 turn,可走 Static(Ink 一次 emit 不再重画),
    *  消除每次 tool result 到位时的全 history 重渲染闪屏。每次 user_submit 时更新。 */
   stableUntilIdx: number;
+  /** 本轮 sticky TodoList 的"起点":只显示 history[todosSinceTurnIdx..] 之间最新一次 TodoWrite 的 todos。
+   *  每次 user_submit 时重置到当前 history 长度——旧 turn 的 TodoList 立即从底部消失。
+   *  这样实现 "TodoList 固定在输入框上方,跨工具调用持续可见" 的 Claude Code 体验。 */
+  todosSinceTurnIdx: number;
+  /** turn 结束标记:每次 onTurnEnd 记录"该 turn 结束时 history 长度 + 时长",
+   *  渲染时在对应位置插入 `✶ Churned for Xm Ys` 灰色行(对齐 Claude Code 每 turn 末尾摘要)。
+   *  不进 session JSONL,resume 时旧 turn 的 churned 标记会丢,新 turn 仍会记录。 */
+  turnEnds: Array<{ atHistoryLen: number; durationMs: number }>;
 }
 
 type UIAction =
@@ -99,10 +113,11 @@ type UIAction =
   | { type: "stream_delta"; delta: string }
   | { type: "stream_reset" }
   | { type: "set_status"; status: UIState["status"] }
-  | { type: "tool_start"; name: string }
+  | { type: "tool_start"; name: string; id: string }
   | { type: "add_usage"; usage: TokenUsage }
   | { type: "estimate"; inputTokens: number }
-  | { type: "set_stopped"; note: string | null };
+  | { type: "set_stopped"; note: string | null }
+  | { type: "record_turn_end"; atHistoryLen: number; durationMs: number };
 
 function reducer(state: UIState, action: UIAction): UIState {
   switch (action.type) {
@@ -117,6 +132,8 @@ function reducer(state: UIState, action: UIAction): UIState {
         turnInputTokens: 0,
         stoppedNote: null,           // 新一轮开始,清掉上一轮 abort 残留提示
         stableUntilIdx: action.stableUntil, // 之前所有 turn 落定,可以丢进 Static
+        lastStartedToolId: null,     // 新 turn 不复用旧 tool id
+        todosSinceTurnIdx: action.stableUntil, // 旧 todos 立即从底部消失,等新 turn 的 TodoWrite
       };
     case "history_set": {
       // 智能去重:如果 history 末尾的 assistant message 已经包含 streamingText 的内容,
@@ -136,7 +153,42 @@ function reducer(state: UIState, action: UIAction): UIState {
           }
         }
       }
-      return { ...state, history: action.messages, streamingText: nextStreamingText };
+      // 自动推进 stableUntilIdx:缩短 dynamic 区高度,缓解长 turn 内 Ink 整树重绘闪屏。
+      // 策略:倒着找"最后一个含未完成 tool_use"的 assistant message idx;它本身 + 之后的
+      //       tool result 留 dynamic(active batch 还在变),其余进 Static。无未完成 → 全 Static。
+      // 副作用:Ink Static 增量 commit 时已完成 batch 整体上推到 stdout 顶部 — 视觉上像
+      //       "滚屏",但比每 16ms 整段 dynamic 重画闪屏好。
+      let nextStable = state.stableUntilIdx;
+      let activeAssistantIdx = -1;
+      for (let i = action.messages.length - 1; i >= 0; i--) {
+        const m = action.messages[i];
+        if (m.role === "assistant" && Array.isArray(m.content)) {
+          const toolUses = m.content.filter(
+            (p): p is { type: "tool_use"; id: string; name: string; args: unknown } =>
+              p.type === "tool_use",
+          );
+          if (toolUses.length > 0) {
+            const allDone = toolUses.every((p) =>
+              action.messages.some(
+                (mm) => mm.role === "tool" && (mm as { toolUseId?: string }).toolUseId === p.id,
+              ),
+            );
+            if (!allDone) activeAssistantIdx = i;
+            break;
+          }
+        }
+      }
+      if (activeAssistantIdx >= 0) {
+        nextStable = Math.max(nextStable, activeAssistantIdx);
+      } else {
+        nextStable = Math.max(nextStable, action.messages.length);
+      }
+      return {
+        ...state,
+        history: action.messages,
+        streamingText: nextStreamingText,
+        stableUntilIdx: nextStable,
+      };
     }
     case "stream_delta":
       // 文本流出意味着 LLM 在思考 / 回话——若刚才在 tool 阶段，自然过渡为 streaming
@@ -157,7 +209,7 @@ function reducer(state: UIState, action: UIAction): UIState {
         runningTool: action.status === "tool" ? state.runningTool : null,
       };
     case "tool_start":
-      return { ...state, status: "tool", runningTool: action.name };
+      return { ...state, status: "tool", runningTool: action.name, lastStartedToolId: action.id };
     case "add_usage":
       return {
         ...state,
@@ -174,6 +226,14 @@ function reducer(state: UIState, action: UIAction): UIState {
       return { ...state, turnInputTokens: action.inputTokens };
     case "set_stopped":
       return { ...state, stoppedNote: action.note };
+    case "record_turn_end":
+      return {
+        ...state,
+        turnEnds: [
+          ...state.turnEnds,
+          { atHistoryLen: action.atHistoryLen, durationMs: action.durationMs },
+        ],
+      };
   }
 }
 
@@ -215,6 +275,9 @@ export function App({
     stoppedNote: null,
     // 启动时 initialMessages(/resume 加载或 --continue)整段当稳定历史:不会再改
     stableUntilIdx: initialMessages?.length ?? 0,
+    lastStartedToolId: null,
+    todosSinceTurnIdx: initialMessages?.length ?? 0,
+    turnEnds: [],
   });
 
   const messagesRef = useRef<Message[]>(initialMessages ?? []);
@@ -275,21 +338,11 @@ export function App({
   const ESC_DOUBLE_WINDOW_MS = 500;
   const [escHint, setEscHint] = useState<string | null>(null); // "Press Esc again to rewind"
 
-  // 输入队列：模型在跑时用户继续提交的消息暂存在这里，本轮结束 onTurnEnd 自动出队跑下一轮
-  // ref 作真相源(同步访问),state 用于触发 UI 重渲染显示队列预览
-  type QueuedInput = string | ContentPart[];
-  const queuedInputsRef = useRef<QueuedInput[]>([]);
-  const [queuedInputs, setQueuedInputs] = useState<QueuedInput[]>([]);
-  const enqueueInput = (input: QueuedInput) => {
-    queuedInputsRef.current.push(input);
-    setQueuedInputs([...queuedInputsRef.current]);
-  };
-  const dequeueInput = (): QueuedInput | null => {
-    if (queuedInputsRef.current.length === 0) return null;
-    const front = queuedInputsRef.current.shift()!;
-    setQueuedInputs([...queuedInputsRef.current]);
-    return front;
-  };
+  // 引导(guidance)队列预览:模型在跑时用户继续提交的消息进 agent.enqueueGuidance,
+  // 这里只是 UI 镜像供"↳ 引导"小框显示。Agent 主循环每轮 flushGuidance 后会触发
+  // onGuidanceInjected → 这里清空。
+  type GuidanceItem = string | ContentPart[];
+  const [guidanceQueue, setGuidanceQueue] = useState<GuidanceItem[]>([]);
 
   // 输入历史：纯用户输入（不含 slash 命令），最旧 → 最新 push 到末尾
   // historyIndex: -1=未导航；0=最新；len-1=最旧
@@ -418,6 +471,9 @@ export function App({
   const [sessionExtraPrompt, setSessionExtraPrompt] = useState<string>("");
   const turnCountRef = useRef<number>(0);
   const sessionStartTimeRef = useRef<number>(Date.now());
+  /** 本轮开始时刻;handleSubmit 入口设置,onTurnEnd 计算 churned duration 用。
+   *  用 ref 而非闭包 state(state 在异步 onTurnEnd 闭包里可能 stale)。 */
+  const turnStartTimeRef = useRef<number>(0);
   useEffect(() => {
     let cancelled = false;
     runHooks(
@@ -472,7 +528,7 @@ export function App({
       hooks: settings.hooks,
       events: {
         onText: (delta) => dispatch({ type: "stream_delta", delta }),
-        onToolCallStart: (_id, name) => dispatch({ type: "tool_start", name }),
+        onToolCallStart: (id, name) => dispatch({ type: "tool_start", name, id }),
         // assistant 流刚结束、这一批 calls 已落到 messages 但 tool 还没开始执行：
         // 立刻同步 history，让所有 ⏺ Tool(...) 调用头一次性显示出来（之前要等第一个
         // result 才能见到任何东西，看起来像"卡死了"）
@@ -496,6 +552,17 @@ export function App({
           const msgs = [...agent.getMessages()];
           messagesRef.current = msgs;
           dispatch({ type: "history_set", messages: msgs });
+          // 记录本 turn 的 churned duration(start 来自 handleSubmit 设的 ref);
+          // 渲染时根据 atHistoryLen 在对应位置插入 "✶ Churned for Xm Ys" 灰色行
+          if (turnStartTimeRef.current > 0) {
+            const duration = Date.now() - turnStartTimeRef.current;
+            dispatch({
+              type: "record_turn_end",
+              atHistoryLen: msgs.length,
+              durationMs: duration,
+            });
+            turnStartTimeRef.current = 0;
+          }
           // abort 触发的 onTurnEnd 不主动 stream_reset:保留 streamingText 让用户看到已流出内容。
           // 上面 history_set 内含智能去重,如果 history 已包含该 text 会自动清 streamingText
           // 避免双显示;Agent 没成功 push 时(corner case),streamingText 兜底保留。
@@ -503,35 +570,15 @@ export function App({
             dispatch({ type: "stream_reset" });
           }
           dispatch({ type: "set_status", status: "idle" });
-
-          // 队列有货:取下一条立刻开新轮(setTimeout 跳出 onTurnEnd 内部递归调栈)。
-          // 队列里存的已经是 InputPipeline 处理后的最终文本(含 @file 展开等),直送 agent。
-          // 同样需要新建本轮 abort controller — Esc 中断也作用于队列触发的下一轮
-          const next = dequeueInput();
-          if (next) {
-            setTimeout(() => {
-              dispatch({ type: "user_submit", stableUntil: messagesRef.current.length });
-              const ctrl = (turnAbortRef.current = new AbortController());
-              agent
-                .runTurn(next, ctrl.signal)
-                .catch((err) => {
-                  if (ctrl.signal.aborted || isAbortLike(err)) {
-                    // 用户主动 Esc:不 stream_reset,保留 streamingText 让用户看到已流出内容。
-                    // history_set 智能去重(reducer 内)会在 Agent 把内容 push 进 history 时
-                    // 自动清空 streamingText,避免双显示。
-                    dispatch({ type: "set_status", status: "idle" });
-                    dispatch({ type: "set_stopped", note: "⏹ Stopped by Esc" });
-                    return;
-                  }
-                  const m = err instanceof Error ? err.message : String(err);
-                  dispatch({ type: "stream_delta", delta: `\n[error] ${m}\n` });
-                  dispatch({ type: "set_status", status: "idle" });
-                })
-                .finally(() => {
-                  if (turnAbortRef.current === ctrl) turnAbortRef.current = null;
-                });
-            }, 0);
-          }
+        },
+        // Agent 在新一轮 stream 启动前 flush 队列 + 注入 messages → 清 UI 镜像。
+        // 同时 history 也已经被 Agent push 了那条 user 消息,这里同步一下让"引导内容"
+        // 立刻在历史里以普通 user message 形式出现(便于用户回看)。
+        onGuidanceInjected: () => {
+          setGuidanceQueue([]);
+          const msgs = [...agent.getMessages()];
+          messagesRef.current = msgs;
+          dispatch({ type: "history_set", messages: msgs });
         },
         onError: (err) => {
           if (turnAbortRef.current?.signal.aborted || isAbortLike(err)) {
@@ -540,7 +587,9 @@ export function App({
             dispatch({ type: "set_stopped", note: "⏹ Stopped by Esc" });
             return;
           }
-          dispatch({ type: "stream_delta", delta: `\n[error] ${err.message}\n` });
+          // 不再拼 [error] 到 streamingText,改成灰字 stoppedNote(跟 Esc 提示同款),
+          // 避免红字跟模型回答混在同一个 ● 块里。下一次 user_submit 自动清。
+          dispatch({ type: "set_stopped", note: formatErrorForUser(err.message) });
           dispatch({ type: "set_status", status: "idle" });
         },
         onPermissionRequest: (toolName, args, summary) =>
@@ -571,10 +620,19 @@ export function App({
       }
 
       // Esc 处理(优先级高于补全/历史,但低于 autocomplete 自身的 Esc 处理):
-      //   - 非 idle 状态:中断当前 stream / 工具执行
+      //   - 非 idle 状态:
+      //     · 若有"引导"队列待注入 → 先清队列(轻撤销),不中断当前 turn
+      //     · 队列空 → 中断当前 stream / 工具执行
       //   - idle 状态(无 autocomplete):双击 500ms 内 rewind 上一轮
       if (key.escape && !(autocomplete && autocomplete.matches.length > 0) && !(atQuery !== null && atMatches.length > 0)) {
         if (state.status !== "idle") {
+          if (guidanceQueue.length > 0) {
+            agentRef.current?.clearGuidance();
+            setGuidanceQueue([]);
+            setEscHint("guidance cleared");
+            setTimeout(() => setEscHint(null), 1500);
+            return;
+          }
           turnAbortRef.current?.abort();
           setEscHint(null);
           return;
@@ -887,13 +945,17 @@ export function App({
         return;
       }
 
-      // 模型在跑 → 入队;队列里存最终内容,dequeue 直送 agent
+      // 模型在跑 → 进 Agent 的 guidance 队列(注入到当前 turn,不开新 turn)。
+      // Agent 主循环下一轮 stream 启动前 flushGuidance 会把它合并成一条 user 消息
+      // 塞进 messages,然后触发 onGuidanceInjected → 这里 setGuidanceQueue([]) 清预览。
       if (state.status !== "idle") {
-        enqueueInput(userContent);
+        agentRef.current?.enqueueGuidance(userContent);
+        setGuidanceQueue((q) => [...q, userContent]);
         return;
       }
 
       dispatch({ type: "user_submit", stableUntil: messagesRef.current.length });
+      turnStartTimeRef.current = Date.now(); // churned duration 基准
       // 立刻把用户消息塞进可见历史,UX 上"瞬间出现"
       {
         const userMsg: Message = { role: "user", content: userContent };
@@ -912,7 +974,7 @@ export function App({
           dispatch({ type: "set_status", status: "idle" });
         } else {
           const msg = err instanceof Error ? err.message : String(err);
-          dispatch({ type: "stream_delta", delta: `\n[error] ${msg}\n` });
+          dispatch({ type: "set_stopped", note: formatErrorForUser(msg) });
           dispatch({ type: "set_status", status: "idle" });
         }
       } finally {
@@ -934,7 +996,15 @@ export function App({
 
   function applySlashResult(result: SlashCommandResult) {
     if (result.exit) {
-      exit();
+      // exit 带 display(/exit 的告别语):append 进 history → React 渲染 ● <text>,
+      // 延后一帧再 unmount。Ink unmount 不主动清屏,最后一帧(含告别语)保留在终端。
+      // 80ms = 5 帧,足够 React commit + Ink emit 完成。
+      if (result.display !== undefined) {
+        appendAssistantText(result.display);
+        setTimeout(() => exit(), 80);
+      } else {
+        exit();
+      }
       return;
     }
     if (result.display !== undefined) {
@@ -1007,7 +1077,13 @@ export function App({
   // maxSrcIdx:group 涉及的 history index 上界,用于 Static 切分(< stableUntilIdx → 进 Static)
   type RenderGroup =
     | { kind: "msg"; key: string; msg: Message; maxSrcIdx: number }
-    | { kind: "batch"; key: string; uses: BatchedToolUse[]; maxSrcIdx: number };
+    | { kind: "batch"; key: string; uses: BatchedToolUse[]; maxSrcIdx: number }
+    // banner 作为 Static 第一项,跟历史一起被 hoist 到 stdout 顶部。
+    // 否则 banner 在 Static 节点之前的 dynamic 区域,Ink 5 在 Static commit 时
+    // 会把 Static 内容 hoist 到 banner 之上,视觉上 banner 跑到历史中间。
+    | { kind: "banner"; key: string; maxSrcIdx: number }
+    // 每个 turn 末尾的灰色摘要行(`✶ Churned for Xm Ys`),来自 state.turnEnds
+    | { kind: "churned"; key: string; durationMs: number; maxSrcIdx: number };
   // 反扫找最后一次 TodoWrite 的 part id —— part 级去重的锚点(grouping + MessageView 共用)
   const latestTodoWritePartId = useMemo(() => {
     for (let i = state.history.length - 1; i >= 0; i--) {
@@ -1022,6 +1098,23 @@ export function App({
     }
     return undefined;
   }, [state.history]);
+
+  // sticky TodoList(底部固定):扫 history[todosSinceTurnIdx..] 之间最新一次 TodoWrite 的 args
+  // 历史区 TodoWrite 不再渲染(AssistantMessage 跳过),全部交给底部 sticky 显示
+  const stickyTodos = useMemo(() => {
+    for (let i = state.history.length - 1; i >= state.todosSinceTurnIdx; i--) {
+      const m = state.history[i];
+      if (m.role === "assistant" && Array.isArray(m.content)) {
+        for (let j = m.content.length - 1; j >= 0; j--) {
+          const p = m.content[j];
+          if (p.type === "tool_use" && p.name === "TodoWrite") {
+            return { args: p.args, key: p.id };
+          }
+        }
+      }
+    }
+    return null;
+  }, [state.history, state.todosSinceTurnIdx]);
 
   const renderGroups = useMemo(() => {
     // 反扫找最后一次出现 TodoWrite 的 assistant message index
@@ -1055,21 +1148,25 @@ export function App({
     for (let i = 0; i < state.history.length; i++) {
       const msg = state.history[i];
       if (msg.role === "tool" && msg.toolUseId && inlinedIds.has(msg.toolUseId)) continue;
-      // 跳过非"最后一次"的 TodoWrite-only assistant message:旧版本不再展示
+      // 跳过所有 TodoWrite-only assistant message:TodoWrite 现在全部交给底部 sticky TodoList
+      // 渲染,历史区不再显示(对齐 Claude Code 的固定底部体验)
       if (msg.role === "assistant" && Array.isArray(msg.content)) {
         const isTodoWriteOnly =
           msg.content.length > 0 &&
           msg.content.every((p) => p.type === "tool_use" && p.name === "TodoWrite");
-        if (isTodoWriteOnly && i !== lastTodoWriteIdx) {
+        if (isTodoWriteOnly) {
           flush();
           continue;
         }
       }
       if (msg.role === "assistant" && Array.isArray(msg.content)) {
-        const onlyTools =
+        // 只对"纯读 / 无副作用"工具做 message-level batch 聚合:Read/Glob/Grep/MemoryRead
+        // Edit/Write/Bash/WebFetch/AskUserQuestion/TodoWrite 等有 side effect 的工具
+        // 必须独立显示(diff / 输出 / 副作用确认是用户必看的产物),不能进 batch 折叠。
+        const onlyBatchable =
           msg.content.length > 0 &&
-          msg.content.every((p) => p.type === "tool_use" && p.name !== "TodoWrite");
-        if (onlyTools) {
+          msg.content.every((p) => p.type === "tool_use" && BATCHABLE_TOOLS.has(p.name));
+        if (onlyBatchable) {
           for (const p of msg.content) {
             if (p.type === "tool_use") {
               pending.push({ part: p, result: resultsByCallId.get(p.id), srcIndex: i, srcMsg: msg });
@@ -1082,30 +1179,75 @@ export function App({
       groups.push({ kind: "msg", key: `msg-${i}`, msg, maxSrcIdx: i });
     }
     flush();
+    // 把 turnEnds 转 churned group 插入到对应 history 位置之后:
+    // turnEnd.atHistoryLen = N → 渲染在 maxSrcIdx === N-1 的 group 之后
+    if (state.turnEnds.length > 0) {
+      const merged: RenderGroup[] = [];
+      let teIdx = 0;
+      for (const g of groups) {
+        merged.push(g);
+        // 检查后续 turnEnds 是否应该插在该 group 之后
+        while (
+          teIdx < state.turnEnds.length &&
+          state.turnEnds[teIdx].atHistoryLen <= g.maxSrcIdx + 1
+        ) {
+          const te = state.turnEnds[teIdx];
+          merged.push({
+            kind: "churned",
+            key: `churned-${te.atHistoryLen}-${teIdx}`,
+            durationMs: te.durationMs,
+            maxSrcIdx: g.maxSrcIdx,
+          });
+          teIdx++;
+        }
+      }
+      // 剩余 turnEnds(超出当前 history 范围,理论上不会发生)
+      while (teIdx < state.turnEnds.length) {
+        const te = state.turnEnds[teIdx];
+        merged.push({
+          kind: "churned",
+          key: `churned-${te.atHistoryLen}-${teIdx}`,
+          durationMs: te.durationMs,
+          maxSrcIdx: state.history.length - 1,
+        });
+        teIdx++;
+      }
+      return merged;
+    }
     return groups;
-  }, [state.history, resultsByCallId, inlinedIds]);
+  }, [state.history, resultsByCallId, inlinedIds, state.turnEnds]);
 
   // 按 stableUntilIdx 切分 renderGroups:稳定 groups 走 Static,不再参与重画;动态 groups 走普通渲染。
   // 这是修复"工具快速完成时全 history 重绘 → 闪屏"的关键(详见 实现日志)。
+  // **banner 也走 Static**(prepend 第一项),否则 Ink 5 会把后续增量 commit 的 Static 内容
+  // hoist 到 banner 之上,视觉上"banner 跑到中间"(实现日志 2026-06-07 banner-static 一节)。
   const { staticGroups, dynamicGroups } = useMemo(() => {
     const cutoff = state.stableUntilIdx;
     const staticG: typeof renderGroups = [];
     const dynamicG: typeof renderGroups = [];
+    if (showBanner) {
+      // maxSrcIdx=-1 表示永远落在 cutoff 之前 → 始终归 Static
+      staticG.push({ kind: "banner", key: "banner-static", maxSrcIdx: -1 });
+    }
     for (const g of renderGroups) {
       if (g.maxSrcIdx < cutoff) staticG.push(g);
       else dynamicG.push(g);
     }
     return { staticGroups: staticG, dynamicGroups: dynamicG };
-  }, [renderGroups, state.stableUntilIdx]);
+  }, [renderGroups, state.stableUntilIdx, showBanner]);
 
   return (
     <Box flexDirection="column">
-      {banner}
-      {/* 稳定历史走 Static:Ink 一次 emit 到 stdout,后续 state 变化不再 reconcile/repaint 这些行 → 消除闪屏 */}
+      {/* 稳定历史 + banner(若启用)一起走 Static:Ink 一次 emit 到 stdout,后续 state 变化
+          不再 reconcile/repaint 这些行 → 消除闪屏 + 防 banner 被 Static commit hoist 推到中间。 */}
       <Static items={staticGroups}>
         {(g) =>
-          g.kind === "batch" ? (
+          g.kind === "banner" ? (
+            <React.Fragment key={g.key}>{banner}</React.Fragment>
+          ) : g.kind === "batch" ? (
             <BatchedToolBlock key={g.key} uses={g.uses} />
+          ) : g.kind === "churned" ? (
+            <ChurnedLine key={g.key} durationMs={g.durationMs} />
           ) : (
             <MessageView
               key={g.key}
@@ -1118,8 +1260,13 @@ export function App({
       </Static>
       <Box flexDirection="column" marginTop={1}>
         {dynamicGroups.map((g) => {
+          // banner 永远 maxSrcIdx=-1 → 始终在 staticGroups,不会出现在 dynamic;TS narrowing 用
+          if (g.kind === "banner") return null;
           if (g.kind === "batch") {
-            return <BatchedToolBlock key={g.key} uses={g.uses} />;
+            return <BatchedToolBlock key={g.key} uses={g.uses} lastStartedToolId={state.lastStartedToolId} />;
+          }
+          if (g.kind === "churned") {
+            return <ChurnedLine key={g.key} durationMs={g.durationMs} />;
           }
           return (
             <MessageView
@@ -1134,7 +1281,11 @@ export function App({
           <Box flexDirection="row" marginTop={1}>
             <Text color="cyan">{DOT} </Text>
             <Box flexDirection="column" flexGrow={1}>
-              <Text>{state.streamingText}</Text>
+              {/* 流式 markdown 渲染:已闭合 block(段/代码块/list)实时渲染成 ANSI
+                  样式;未闭合段保留纯文本。Block 级缓存(React.memo + useMemo)
+                  让闭合后的旧 block 不重 parse、不重 render — Ink 看到同样的 Text
+                  child 也会减少 erase,显著降低长输出的闪屏。Claude Code 同样思路。 */}
+              <StreamingMarkdown text={state.streamingText} />
             </Box>
           </Box>
         )}
@@ -1195,6 +1346,17 @@ export function App({
           llm={llm}
         />
       )}
+      {/* Sticky TodoList:固定在输入框上方(状态行之上),跨工具调用持续可见。
+          每次 user_submit 时 todosSinceTurnIdx 重置 → 旧 turn 的 todos 立即消失。
+          turn 内 LLM 调 TodoWrite 后这里实时更新;turn 结束(全 completed)仍显示
+          到下次用户输入。 */}
+      {stickyTodos && (
+        <TodoList
+          key={stickyTodos.key}
+          todos={extractTodos(stickyTodos.args)}
+          listTitle={extractListTitle(stickyTodos.args)}
+        />
+      )}
       {state.status !== "idle" && (
         <StatusLine
           startTime={state.turnStartTime}
@@ -1212,20 +1374,32 @@ export function App({
       )}
       {inputVisible && (
         <Box flexDirection="column">
-          {queuedInputs.length > 0 && (
-            <Box flexDirection="column" marginLeft={2} marginTop={1}>
-              {queuedInputs.map((q, i) => {
-                const preview = previewUserContent(q);
-                return (
-                  <Text key={i} color="yellow" dimColor>
-                    {`↳ queued: ${preview.length > 60 ? preview.slice(0, 60) + "…" : preview}`}
-                  </Text>
-                );
-              })}
-              <Text dimColor>{`  (will send after current turn · ${queuedInputs.length} pending)`}</Text>
-            </Box>
-          )}
-          <Box marginTop={1} flexDirection="column">
+          {guidanceQueue.length > 0 && (() => {
+            // 引导框 #404040 灰底(输入框 #1c1c1c,亮度差 36),
+            // 左 4 cells marginLeft 缩进 + 右侧总宽留 4 cells 空 → 左右两端都比输入框短。
+            // 固定宽度(不再跟内容长度变);内容超过宽度截 70 字符 + "…"。
+            const INDENT = 4;
+            const RIGHT_PAD = 4;
+            const innerWidth = Math.max(20, termWidth - 1 - INDENT - RIGHT_PAD);
+            return (
+              <Box flexDirection="column" marginTop={1} marginLeft={INDENT}>
+                {guidanceQueue.map((q, i) => {
+                  const preview = previewUserContent(q);
+                  const shown = preview.length > 70 ? preview.slice(0, 70) + "…" : preview;
+                  const text = ` ↳ 引导  ${shown}`;
+                  // stringWidth 算上 CJK 双宽;pad 用空格补到 innerWidth cells
+                  const padCells = Math.max(1, innerWidth - stringWidth(text));
+                  return (
+                    <Box key={i} flexDirection="row">
+                      <Text backgroundColor="#404040">{text + " ".repeat(padCells)}</Text>
+                    </Box>
+                  );
+                })}
+              </Box>
+            );
+          })()}
+          {/* 有 guidance 时输入框贴紧;无 guidance 时回到 marginTop=1 */}
+          <Box marginTop={guidanceQueue.length > 0 ? 0 : 1} flexDirection="column">
             <Text backgroundColor="#1c1c1c">
               {" ".repeat(Math.max(1, termWidth - 1))}
             </Text>
@@ -1302,6 +1476,26 @@ function extractUserInputs(messages: Message[]): string[] {
  * 判断错误是否是用户主动 abort 的(Esc/Ctrl+C)。覆盖 Vercel SDK "This operation was aborted"
  * 这种 name 不是 AbortError 但 message 带关键字的 case。
  */
+/**
+ * 把 LLM / provider 抛出来的错误转成给用户看的灰字提示。
+ *  - "unavailable tool 'X'" 这类是切换 mode 后历史里仍有禁用工具的 server 拒绝;
+ *    告诉用户"模型试图调用 X(当前模式不允许)",避免红字 [error] 跟模型回答混在一起
+ *  - 其他错误保留原文(英文一句),前缀 ⚠
+ */
+function formatErrorForUser(message: string): string {
+  const m = message.trim();
+  // server 端拒绝:`...unavailable tool 'Edit'...`
+  const unavail = m.match(/unavailable tool ['"]?([A-Za-z_][\w]*)['"]?/i);
+  if (unavail) {
+    return `⚠ 模型试图调用 ${unavail[1]},当前模式不允许;请切换模式或换种问法`;
+  }
+  // 通用网络 / 超时归类
+  if (/timeout|timed out|ETIMEDOUT/i.test(m)) return `⚠ 请求超时,请重试`;
+  if (/ECONNREFUSED|ENOTFOUND|ECONNRESET/i.test(m)) return `⚠ 网络无法连接 provider`;
+  if (/rate limit|429/i.test(m)) return `⚠ 触发 provider 限流,稍候重试`;
+  return `⚠ ${m}`;
+}
+
 function isAbortLike(err: unknown): boolean {
   if (!err) return false;
   if (err instanceof Error) {
@@ -1312,6 +1506,23 @@ function isAbortLike(err: unknown): boolean {
     if (msg.includes("aborted") || msg.includes("cancelled") || msg.includes("canceled")) return true;
   }
   return false;
+}
+
+/** 单个 turn 结尾的灰色摘要行,对齐 Claude Code 的 `✶ Churned for Xm Ys` 风格。 */
+function ChurnedLine({ durationMs }: { durationMs: number }) {
+  return (
+    <Box marginTop={1}>
+      <Text dimColor>{`✶ Churned for ${formatChurnedDuration(durationMs)}`}</Text>
+    </Box>
+  );
+}
+
+function formatChurnedDuration(ms: number): string {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
 }
 
 function previewUserContent(input: string | ContentPart[]): string {
