@@ -18,6 +18,7 @@ import { BuildSystemPromptStage } from "./build-system-prompt.js";
 import { InjectMemoryStage } from "./inject-memory.js";
 import { InjectTodosStage } from "./inject-todos.js";
 import { ApplyModeFilterStage } from "./apply-mode-filter.js";
+import { ClearStaleToolResultsStage } from "./clear-stale-tool-results.js";
 import { TrimHistoryStage } from "./trim-history.js";
 import { BudgetGuardStage } from "./budget-guard.js";
 import type { RequestCtx } from "./ctx.js";
@@ -31,6 +32,7 @@ export function RequestPipeline(opts: PipelineRunOptions = {}): Pipeline<Request
     [
       new BuildSystemPromptStage(),
       new InjectMemoryStage(),
+      new ClearStaleToolResultsStage(),  // I-3:折叠可重获取的旧 tool result(在 trim/budget 之前)
       new InjectTodosStage(),
       new ApplyModeFilterStage(),
       new TrimHistoryStage(),

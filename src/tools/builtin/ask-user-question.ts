@@ -4,7 +4,7 @@
  * 流程：tool.execute → ctx.askQuestion(req) → App 渲染 QuestionPicker → 用户 ↑↓ 选 + Enter
  * → resolve 把结果传回 → tool 把答案拼成文本喂给 LLM。Esc 取消会返回 cancelled=true。
  *
- * 一次调用可塞多个 questions（仿 Claude Code），逐题展示，任一题 Esc 视为整批取消。
+ * 一次调用可塞多个 questions（对齐业界 Q&A picker 形态），逐题展示，任一题 Esc 视为整批取消。
  *
  * 注意：tool 本身不调任何外部资源，permission 用 read（不弹权限确认）。
  */

@@ -129,7 +129,7 @@ export async function loadSettings(cwd: string = process.cwd()): Promise<LoadedS
   // 展开 ${ENV_VAR} 占位符
   merged = expandEnvVars(merged) as Settings;
 
-  // settings.env 注入 process.env(仿 Claude Code)。
+  // settings.env 注入 process.env(对齐业界 CLI Agent 形态)。
   // 已存在的环境变量不覆盖 — shell / CLI 显式设置优先级最高。
   if (merged.env) {
     for (const [key, value] of Object.entries(merged.env)) {

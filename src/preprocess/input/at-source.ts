@@ -128,7 +128,7 @@ async function listDir(cwd: string, query: string): Promise<AtCandidate[]> {
 function fuzzyFilter(all: AtCandidate[], query: string): AtCandidate[] {
   if (!query) {
     // 无 query → 返浅层目录优先(rel 中 `/` 越少越前),
-    // 让用户敲 @ 就看到 cwd 顶层,与 Claude Code 行为对齐
+    // 让用户敲 @ 就看到 cwd 顶层,符合常见的 @ 引用补全行为
     return all
       .slice()
       .sort((a, b) => {

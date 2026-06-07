@@ -1,5 +1,5 @@
 /**
- * AskUserQuestion UI——完整复刻 Claude Code 的链式选择器。
+ * AskUserQuestion UI——对齐业界 Coding Agent 的链式选择器形态。
  *
  * 布局：
  *
@@ -214,7 +214,7 @@ export function QuestionPicker({ request }: { request: QuestionPickerRequest }) 
       }));
       return;
     }
-    // n —— 进入 notes 编辑（任何 picker 题都允许，对齐 Claude Code）
+    // n —— 进入 notes 编辑（任何 picker 题都允许）
     if (input === "n" && !key.ctrl && !key.meta) {
       updateState(qi, (st) => ({
         ...st,

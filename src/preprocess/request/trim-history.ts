@@ -1,7 +1,7 @@
 /**
  * trim-history stage:基于 token 预算的滑动窗口/优先级裁剪。
  *
- * 设计文档:模块设计/消息预处理工程/设计.md §4.2.3。
+ * 设计文档:模块设计/消息预处理工程/设计.md §4.2.3;模块设计/上下文管理工程/设计.md §4.1。
  * ADR #3:触发阈值 budget × 0.8,裁剪到 budget × 0.6 以下停手(2026-06-07 拍板)。
  *
  * 策略:
@@ -11,7 +11,9 @@
  *      - 保第一条 user(initial task,通常是用户原始诉求)
  *      - 找一个安全切点 keepStart 使得 [0] + [keepStart..end] 落入 0.6 budget
  *      - 安全切点 = 不破坏 tool_use ↔ tool_result 配对(复用 findSafeCutoff)
- *      - 中间裁掉的段用一条 user marker 替代,让 LLM 知道有上下文丢失
+ *      - **保护 user 消息原文**(2026-06-07 I-1 修):被 cutoff 段内的所有 user 消息
+ *        提取出来按原顺序排在 messages[0] 之后,只把 assistant + tool result 压成一条
+ *        marker。理由:对齐业界共识"用户消息不可丢"(详见调研报告 §3.1.2)
  *
  * 不污染 agent.messages:替换 ctx.messages 整体引用,不就地 splice/mutate。
  */
@@ -69,7 +71,7 @@ export class TrimHistoryStage implements PipelineStage<RequestCtx> {
  */
 const MIN_TRIM_COUNT = 2;
 
-function trimMessages(
+export function trimMessages(
   messages: Message[],
   targetTokens: number,
   systemPrompt: string,
@@ -85,11 +87,7 @@ function trimMessages(
     const cutoff = findSafeCutoff(messages, keepRecent);
     if (cutoff < MIN_TRIM_COUNT) continue;
 
-    const marker: Message = {
-      role: "user",
-      content: `[${cutoff - 1} earlier message${cutoff - 1 === 1 ? "" : "s"} trimmed to fit context window]`,
-    };
-    const trimmed: Message[] = [messages[0], marker, ...messages.slice(cutoff)];
+    const trimmed = buildTrimmedWithUserProtection(messages, cutoff);
     const tokens = countMessages(trimmed, systemPrompt, tools);
     if (tokens <= targetTokens) return trimmed;
     // 没命中但记下最激进的尝试,作为兜底
@@ -98,4 +96,41 @@ function trimMessages(
 
   // 所有 keepRecent 都裁不到 target 以下 — 返回最激进的那次(已是最大努力)
   return bestTrimmed ?? messages;
+}
+
+/**
+ * 构造 trim 后的 messages 数组,保护 user 消息原文。
+ *
+ * 输入:原始 messages + 安全切点 cutoff(messages[0..cutoff-1] 被压缩,
+ *       messages[cutoff..] 原样保留)
+ * 输出:[messages[0], ...被压段内所有 user 消息原文, marker, ...messages[cutoff..]]
+ *
+ * marker 说明被吃掉了多少 assistant turn + tool result,让 LLM 知道有上下文丢失但
+ * 用户消息全保。
+ */
+function buildTrimmedWithUserProtection(messages: Message[], cutoff: number): Message[] {
+  const middle = messages.slice(1, cutoff);
+  const preservedUsers: Message[] = [];
+  let assistantTurns = 0;
+  let toolResults = 0;
+  for (const m of middle) {
+    if (m.role === "user") preservedUsers.push(m);
+    else if (m.role === "assistant") assistantTurns++;
+    else if (m.role === "tool") toolResults++;
+  }
+
+  const parts: string[] = [];
+  if (assistantTurns > 0) parts.push(`${assistantTurns} assistant turn${assistantTurns === 1 ? "" : "s"}`);
+  if (toolResults > 0) parts.push(`${toolResults} tool result${toolResults === 1 ? "" : "s"}`);
+  const userNote =
+    preservedUsers.length > 0
+      ? ` The ${preservedUsers.length} user message${preservedUsers.length === 1 ? "" : "s"} from that range ${preservedUsers.length === 1 ? "is" : "are"} preserved above for context.`
+      : "";
+  const markerText =
+    parts.length > 0
+      ? `[System note: ${parts.join(" and ")} from earlier in this conversation were trimmed to fit the context window.${userNote}]`
+      : `[System note: earlier conversation trimmed to fit context window.${userNote}]`;
+  const marker: Message = { role: "user", content: markerText };
+
+  return [messages[0], ...preservedUsers, marker, ...messages.slice(cutoff)];
 }

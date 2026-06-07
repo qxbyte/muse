@@ -52,6 +52,12 @@ export interface SlashActions {
    * resolve 在用户关闭浮层时调用，命令体可以 await 这个 Promise 后清理。
    */
   askBtw(question: string): Promise<void>;
+  /**
+   * 在外部编辑器($VISUAL || $EDITOR || vi)中打开文件。
+   * Ink TUI 临时让出 TTY 给编辑器,退出后恢复。
+   * 编辑器进程退出码 != 0 时 reject。
+   */
+  openInEditor(filePath: string): Promise<void>;
 }
 
 export interface SlashCommandContext {

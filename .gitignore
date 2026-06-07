@@ -41,3 +41,7 @@ logs/
 
 
 CLAUDE.md
+
+# local probe / debug scripts(开发期临时调试,不入仓库)
+probe-*.mjs
+*-probe.mjs

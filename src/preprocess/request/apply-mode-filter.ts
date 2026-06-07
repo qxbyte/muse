@@ -13,7 +13,15 @@ export class ApplyModeFilterStage implements PipelineStage<RequestCtx> {
   readonly name = "apply-mode-filter";
 
   run(ctx: RequestCtx): void {
-    const filter = ctx.mode === "plan" ? (t: { permission: string }) => t.permission === "read" : undefined;
+    // I-5:Memory 工具永远可见(plan 模式下也保留)— Anthropic cookbook 强制
+    // exclude_tools:["memory"] 反义,对齐"压缩时不丢记忆"原则;memory 写入不算"执行性写代码",
+    // 不违反 plan 模式语义。
+    const MEMORY_WHITELIST = new Set(["MemoryRead", "MemoryWrite"]);
+    const filter =
+      ctx.mode === "plan"
+        ? (t: { name: string; permission: string }) =>
+            t.permission === "read" || MEMORY_WHITELIST.has(t.name)
+        : undefined;
     ctx.tools = ctx.services.toolRegistry.toLLMDefinitions(filter);
 
     if (ctx.mode === "plan") {

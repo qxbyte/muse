@@ -16,6 +16,8 @@ import { Session } from "./session/jsonl.js";
 import { Agent } from "./loop/agent.js";
 import { TodoStore } from "./loop/todos.js";
 import { loadMemoryIndex } from "./loop/memory.js";
+import { loadHierarchy } from "./loop/hierarchy.js";
+import { buildMemoryIndex, type MemoryIndex } from "./loop/memory-index.js";
 import { InputPipeline, createInputCtx, buildUserMessage } from "./preprocess/input/index.js";
 import { RequestPipeline } from "./preprocess/request/index.js";
 import { ResultPipeline } from "./preprocess/result/index.js";
@@ -221,6 +223,30 @@ async function runOneShot(opts: {
   initialMessages?: import("./types/index.js").Message[];
 }): Promise<void> {
   const memoryIndex = await loadMemoryIndex(opts.cwd);
+  const hierarchy = await loadHierarchy(opts.cwd);
+  // II-5:启用时构建 memory embedding index(失败完全降级,不阻塞 muse 启动)
+  let memoryEmbeddingIndex: MemoryIndex | undefined;
+  if (opts.settings.memory?.embedding?.enabled) {
+    try {
+      memoryEmbeddingIndex = await buildMemoryIndex(opts.cwd, {
+        config: opts.settings.memory.embedding,
+      });
+      if (!opts.quiet) {
+        const entries = memoryEmbeddingIndex.entries.length;
+        process.stderr.write(
+          `[memory] embedding ready: provider=${memoryEmbeddingIndex.provider.id}, indexed ${entries} memor${entries === 1 ? "y" : "ies"}\n`,
+        );
+      }
+    } catch (err) {
+      if (!opts.quiet) {
+        process.stderr.write(
+          `[memory] embedding init failed: ${(err as Error).message}\n` +
+            `[memory] falling back to MEMORY.md full-text mode (memory still works, just keyword-based).\n` +
+            `         Run \`/memory diagnose\` inside muse for details and fix suggestions.\n`,
+        );
+      }
+    }
+  }
   const sessionStartTime = Date.now();
 
   // SessionStart hook
@@ -294,6 +320,10 @@ async function runOneShot(opts: {
     requestServices: {
       todos,
       memoryIndex,
+      hierarchy,
+      memoryEmbeddingIndex,
+      memoryEmbeddingTopK: opts.settings.memory?.embedding?.topK,
+      memoryEmbeddingMinCount: opts.settings.memory?.embedding?.minMemoryCount,
       toolRegistry: opts.tools,
       lang: opts.lang,
       provider: opts.llm.providerName,

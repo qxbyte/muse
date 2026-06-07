@@ -1,7 +1,7 @@
 {
   "name": "@qxbyte/muse",
-  "version": "0.1.3",
-  "description": "A TypeScript agent CLI built around OpenAI-compatible APIs. First-class support for self-hostable and Chinese LLMs (DeepSeek, Qwen, Kimi, GLM, Ollama, MiMo).",
+  "version": "0.2.0",
+  "description": "TypeScript agent CLI with built-in permission gating, long-term memory (project + user dual-scope) and optional vector recall (OpenAI / DashScope / Zhipu / Ollama / local-transformers). First-class support for self-hostable and Chinese LLMs (DeepSeek, Qwen, Kimi, GLM, Ollama, MiMo).",
   "type": "module",
   "license": "MIT",
   "homepage": "https://github.com/qxbyte/muse#readme",
@@ -20,8 +20,14 @@
     "ink",
     "deepseek",
     "qwen",
+    "kimi",
+    "glm",
     "ollama",
-    "openai-compatible"
+    "openai-compatible",
+    "memory",
+    "embedding",
+    "vector-search",
+    "long-term-memory"
   ],
   "bin": {
     "muse": "./dist/cli.js"

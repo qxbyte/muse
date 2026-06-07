@@ -1,8 +1,8 @@
 # Muse
 
-> A TypeScript agent CLI built around OpenAI-compatible APIs. First-class support for self-hostable and Chinese LLMs (DeepSeek, Qwen, Kimi, GLM, Ollama, MiMo).
+> 围绕 OpenAI 兼容协议构建的 TypeScript Agent CLI,内建权限管控 + 长期记忆 + 向量召回。一线支持国内 LLM(DeepSeek / Qwen / Kimi / GLM / Ollama / MiMo)。
 
-**状态：v0.1 MVP**。API 可能调整，请关注 release notes。
+**v0.2.0 新增**:跨项目 + 项目级双层长期记忆(`/memory` + `/remember`)· `MUSE.md` / `AGENTS.md` 多层 hierarchy · 向量召回(6 个 OpenAI 兼容 preset + 4 个本地 transformers preset,默认关闭) · trust 分级(trusted/verified/auto)· 9 节 compaction schema · 上下文管理升级(用户消息保护 / tool result 自动折叠 / facts 自动 promote 等)。完整配置见 [`docs/操作手册.md`](./docs/操作手册.md)。
 
 ---
 
@@ -12,6 +12,7 @@
 - [快速开始](#快速开始)
 - [配置详解](#配置详解)
 - [使用](#使用)
+- [长期记忆与向量召回](#长期记忆与向量召回)
 - [常见问题](#常见问题)
 - [License](#license)
 
@@ -306,38 +307,43 @@ muse --help
 
 ### Slash 命令
 
-启动后在 TUI 输入 `/` 会弹出补全列表，↑↓ 导航，Tab/Enter 接受。
+启动后在 TUI 输入 `/` 会弹出补全列表,↑↓ 导航,Tab/Enter 接受。`/help` 输出按分类分组 + 按键提示。
 
 | 命令 | 作用 |
 |---|---|
-| `/help` | 列出所有命令 |
+| `/help` | 列所有命令(按分类分组)+ 按键速查表 |
 | `/clear` | 清空当前会话 |
 | `/cost` | 当前会话 token 用量 + 费用估算 |
-| `/status` | 模型 / cwd / 历史 / token 综合状态 |
-| `/model` | 弹出 selector，↑↓ + Enter 切换模型（自动写回 settings.json + 注入 env） |
-| `/config` | 显示 effective 配置（apiKey 脱敏） |
-| `/config reload` | 不重启 muse 热加载所有配置 |
-| `/config path` | 列出配置文件路径 |
-| `/compact` | 摘要老消息释放上下文（`--keep N` 保留最近 N 条） |
-| `/btw <question>` | 旁白问答：用当前对话作上下文跑一次无工具 LLM 流，答案在浮层显示且**不**进历史；Enter/Esc/Space 关闭 |
-| `/resume` | ↑↓ 选历史会话加载；带参 `/resume <id-prefix>` 直接加载 |
-| `/mcp` | MCP server 状态 |
-| `/quit` / `/exit` | 退出 |
+| `/model` | 弹出 selector,↑↓ 选模型(自动写回 settings.json) |
+| `/config [reload\|path]` | 显示 effective 配置 / 热加载 / 列配置文件路径 |
+| `/compact [--keep N]` | 摘要老消息释放上下文(9 节结构化 schema + facts 自动 promote 到 memory) |
+| `/memory [子命令]` | 长期记忆管理(详见 [`docs/操作手册.md`](./docs/操作手册.md) §4.3)<br>`list` / `view <name>` / `edit <name>` / `delete <name>` / `promote <name>` / `promote-scope <name>` / `trust <name> <level>` / `search <query>` / `diff` / `diagnose` |
+| `/remember [--user\|--project] <text>` | 用户显式存记忆 — LLM 把口语化文本抽取成结构化 memory(默认 user 跨项目) |
+| `/btw <question>` | 旁白问答:浮层显示,**不**进历史 |
+| `/resume` | ↑↓ 选历史会话加载;带参 `/resume <id-prefix>` 直接加载 |
+| `/mcp` | MCP server 状态(预留,v0.3 落地) |
+| `/mode [<mode>]` | 切权限模式(default / acceptEdits / plan / bypassPermissions) |
+| `/exit` | 退出 |
 
 ### 内置工具
 
-LLM 在执行任务时可调用：
+LLM 在执行任务时可调用:
 
 | 工具 | 作用 |
 |---|---|
-| `Read` | 读文件，支持 offset / limit 分页 |
-| `Write` | 写文件（必须先 Read 过才能 Write，防误覆盖） |
-| `Edit` | 精确字符串替换（比全文重写省 token） |
+| `Read` | 读文件,支持 offset / limit 分页 |
+| `Write` | 写文件(必须先 Read 过才能 Write,防误覆盖) |
+| `Edit` | 精确字符串替换(比全文重写省 token) |
 | `Grep` | ripgrep 包装 |
 | `Glob` | 文件匹配 |
-| `Bash` | 执行 shell 命令；危险命令（rm -rf / sudo / curl…|sh）硬拒绝 |
+| `Bash` | 执行 shell 命令;危险命令(rm -rf / sudo / curl…\|sh)硬拒绝 |
+| `WebFetch` | 抓取 URL → markdown(SSRF 防护 + http→https + 30s + 1MB) |
+| `TodoWrite` | 任务清单(session 内),固定显示在输入框上方 |
+| `MemoryRead` | 读单条长期 memory(`MEMORY.md` 索引行自动注入 system prompt) |
+| `MemoryWrite` | 写长期 memory(支持 `scope: "project" \| "user"` 双层) |
+| `AskUserQuestion` | 弹结构化 picker 同步问用户(单 / 多选 + Notes) |
 
-所有写操作 / Bash 默认走权限弹窗（y/n 确认），权限模式可调（见下）。
+所有写操作 / Bash 默认走权限弹窗(y/n 确认),权限模式可调(见下)。
 
 ### 权限模式（Shift+Tab 循环）
 
@@ -362,7 +368,47 @@ LLM 在执行任务时可调用：
 
 ### Markdown 渲染
 
-assistant 回复里的 markdown（标题、列表、代码块、表格、链接）会被渲染成富文本。流式输出过程中是纯文本，本轮结束后自动替换成格式化版本。
+assistant 回复里的 markdown(标题、列表、代码块、表格、链接)会被渲染成富文本。流式输出过程中是纯文本,本轮结束后自动替换成格式化版本。
+
+---
+
+## 长期记忆与向量召回
+
+v0.2.0 新增。`/memory` 命令族管理跨 session 持久化记忆;`/remember` 是用户显式入口。
+
+**两层独立存储 + 合并召回**:
+
+| scope | 路径 | 用途 |
+|---|---|---|
+| `project` | `~/.muse/projects/<hash>/memory/` | 项目专属(团队约定 / 项目 bug 修复 / 架构决策) |
+| `user` | `~/.muse/memory/` | 跨项目用户级(编辑器偏好 / 工作语言 / 工具偏好) |
+
+召回时两层合并,**项目优先**(同分时 project 排前)。trust 分级:`trusted`(`MUSE.md`/`AGENTS.md`,硬约束)/ `verified`(用户编辑过)/ `auto`(LLM 自动写,可被新证据覆盖)。
+
+**`MUSE.md` / `AGENTS.md` hierarchy**:5 层 — `~/.muse/MUSE.md`(全局)→ `<project>/MUSE.md`(团队)→ `<project>/.muse/MUSE.local.md`(个人本地)→ 子目录惰性加载。`AGENTS.md` 兼容读取(跨工具事实标准)。
+
+**向量召回**(默认关闭,启用一行配置):
+
+```jsonc
+// ~/.muse/settings.local.json
+{
+  "memory": {
+    "embedding": {
+      "enabled": true,
+      "preset": "dashscope-v3",          // 阿里 DashScope(国内直连,推荐中文场景)
+      "apiKey": "${DASHSCOPE_API_KEY}"
+    }
+  }
+}
+```
+
+支持的 preset:
+- **云端 OpenAI 协议**:`dashscope-v3`(阿里 1024-dim)/ `zhipu-3`(智谱 2048-dim)/ `openai-3-small`(1536-dim) / `openai-3-large`(3072-dim)/ `ollama-nomic` / `ollama-bge-m3`(本地零成本)
+- **本地 transformers**(需先 `npm i -g @huggingface/transformers`):`local-bge-zh` / `local-bge-en` / `local-minilm` / `local-bge-m3`
+
+**配置失败永不阻塞** — 自动降级到 `hash-bag`(本地零依赖) → 全文模式(`MEMORY.md` 索引前 200 行注入)。`muse` 内跑 `/memory diagnose` 看状态 + 修复建议。
+
+完整章节见 [`docs/操作手册.md`](./docs/操作手册.md) §3.7 / §4.3 / §4.4 / §9.7。
 
 ---
 
@@ -413,8 +459,25 @@ muse           # 进 TUI
 
 ```bash
 npm uninstall -g @qxbyte/muse
-rm -rf ~/.muse                            # 清配置 / 会话 / 日志（可选）
+rm -rf ~/.muse                            # 清配置 / 会话 / 日志(可选)
 ```
+
+### 启用 embedding 后召回不准 / 启动报错
+
+在 muse 里跑 `/memory diagnose`,会显示:
+- 当前 embedding 配置(preset / model / apiKey 是否设)
+- 索引文件状态(每 scope 的 `.index.json` 是否存在)
+- Live probe 结果(✓ / ✗ HTTP 错)
+- 按错误类型分类的修复建议
+
+任何失败都自动降级到 hash-bag / 全文模式,muse 永远可用。
+
+---
+
+## 更多文档
+
+- [`docs/操作手册.md`](./docs/操作手册.md) — 完整配置 / 命令参考 / 三套 embedding 启用清单(阿里 / OpenAI / Ollama)/ FAQ
+- [`CHANGELOG`](https://github.com/qxbyte/muse/releases) — 各版本变更
 
 ---
 

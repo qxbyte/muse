@@ -24,7 +24,8 @@ export type HookPoint =
   | "PreToolUse"
   | "PostToolUse"
   | "PreCompact"
-  | "PostCompact";
+  | "PostCompact"
+  | "MemoryPromote";
 
 export interface HookSpec {
   /** 工具名 / 路径前缀的正则匹配字符串(不含 /);"" 或缺省视为全匹配 .* 。 */
@@ -47,6 +48,8 @@ export interface HooksConfig {
   PostToolUse?: HookSpec[];
   PreCompact?: HookSpec[];
   PostCompact?: HookSpec[];
+  /** I-5:compactMessages 在 promote 每条 fact 到 memory 之前调用;可 block 该条。 */
+  MemoryPromote?: HookSpec[];
 }
 
 export interface HookOutput {

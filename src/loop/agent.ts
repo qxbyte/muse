@@ -32,6 +32,10 @@ import type { RequestCtx, RequestServices } from "../preprocess/request/index.js
 import { createRequestCtx, BudgetExceededError } from "../preprocess/request/index.js";
 import { countMessages } from "../preprocess/tokenize.js";
 import { compactMessages } from "./context.js";
+import { findProjectRoot, loadSubdirMemory } from "./hierarchy.js";
+import { upsertMemoryEntry, removeMemoryEntry } from "./memory-index.js";
+import { existsSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ResultCtx, ResultPreprocessSettings } from "../preprocess/result/index.js";
 import { createResultCtx } from "../preprocess/result/index.js";
 import type { HooksConfig } from "../preprocess/hooks.js";
@@ -161,8 +165,25 @@ export class Agent {
    */
   private pendingGuidance: ContentPart[][] = [];
 
+  /**
+   * II-1.3 子目录惰性加载状态:已注入过子目录 MUSE.md / AGENTS.md 的绝对路径集合。
+   *
+   * tool 操作触及未加载过的子目录(包含 MUSE.md 或 AGENTS.md)时,把内容附加到 tool result
+   * prefix,让 LLM 看到该子目录的 guidance。同一子目录只注入一次(去重)。
+   *
+   * /clear 调 clearLoadedSubdirs() 重置;/resume 不重置(假设旧 session 已加载过)。
+   */
+  private loadedSubdirs = new Set<string>();
+  private readonly projectRoot: string;
+
   constructor(private ctx: AgentContext) {
     this.todos = ctx.todos ?? new TodoStore();
+    this.projectRoot = findProjectRoot(ctx.cwd);
+  }
+
+  /** 给 /clear 等场景重置子目录加载状态。 */
+  clearLoadedSubdirs(): void {
+    this.loadedSubdirs.clear();
   }
 
   /** 估算 input tokens:走 src/preprocess/tokenize.ts(js-tiktoken cl100k_base)。
@@ -447,12 +468,25 @@ export class Agent {
           // compact 闭包:budget-guard 触发时调用。真实改写 this.messages
           // (compact 是历史压缩,不可逆,要落到 agent state)。
           compact: async (signal) => {
+            // I-5 联动:传 cwd 触发 facts 自动 promote 到 long-term memory
             const result = await compactMessages(this.messages, {
               llm: this.ctx.llm,
               abortSignal: signal,
               hooks: this.ctx.hooks,
+              cwd: this.ctx.cwd,
             });
             this.messages = result.newMessages;
+            // II-5 联动:把成功 promote 的 facts upsert 到 in-memory 向量索引(session 内立即可召回)
+            if (result.promotedFacts && this.ctx.requestServices?.memoryEmbeddingIndex) {
+              for (const f of result.promotedFacts) {
+                if (f.status !== "saved") continue;
+                try {
+                  await upsertMemoryEntry(this.ctx.requestServices.memoryEmbeddingIndex, f.name, "project");
+                } catch (err) {
+                  log.warn("memory index upsert (compact-promote) failed", { name: f.name, msg: (err as Error).message });
+                }
+              }
+            }
             return this.messages;
           },
         },
@@ -679,7 +713,56 @@ export class Agent {
       }
     }
 
+    // II-5:MemoryWrite 完成后,如果当前 session 有 memoryEmbeddingIndex,
+    // 触发增量 upsert 让本轮新 memory 立即可召回(避免要等下次 muse 启动)
+    if (input.toolName === "MemoryWrite" && !isError) {
+      const index = this.ctx.requestServices?.memoryEmbeddingIndex;
+      if (index) {
+        try {
+          const args = input.args as { name?: string; scope?: string } | null | undefined;
+          const name = typeof args?.name === "string" ? args.name : undefined;
+          const scope = args?.scope === "user" ? "user" : "project";
+          if (name) {
+            await upsertMemoryEntry(index, name, scope);
+          }
+        } catch (err) {
+          log.warn("memory index upsert failed", { msg: (err as Error).message });
+        }
+      }
+    }
+
+    // II-1.3 子目录惰性加载:tool 操作触及未加载子目录(有 MUSE.md / AGENTS.md)
+    // 时,把子目录内容附加到 result content 前面,让 LLM 看到该子目录的额外约束。
+    try {
+      const subdirInjection = await this.maybeInjectSubdirHierarchy(input.toolName, input.args);
+      if (subdirInjection) {
+        content = `${subdirInjection}\n\n---\n\n[Original tool result]\n${content}`;
+      }
+    } catch (err) {
+      // 子目录加载失败不应阻塞工具结果;只记 warn
+      log.warn("subdir hierarchy inject failed", { msg: (err as Error).message });
+    }
+
     return { content, isError, summary, diff, kind };
+  }
+
+  /**
+   * 检查工具操作的路径是否落入未加载过的子目录;子目录(向上找最近的)若含 MUSE.md / AGENTS.md
+   * 就把内容封装成 system 注释返回(由 caller 前置到 tool result)。
+   */
+  private async maybeInjectSubdirHierarchy(toolName: string, args: unknown): Promise<string | null> {
+    const path = extractToolPath(toolName, args);
+    if (!path) return null;
+    const absPath = isAbsolute(path) ? path : resolve(this.ctx.cwd, path);
+    const subdir = findContainingSubdirWithHierarchy(absPath, this.projectRoot);
+    if (!subdir) return null;
+    if (this.loadedSubdirs.has(subdir)) return null;
+    this.loadedSubdirs.add(subdir);
+    const loaded = await loadSubdirMemory(subdir);
+    if (!loaded) return null;
+    const relPath = relative(this.projectRoot, subdir) || ".";
+    const truncatedNote = loaded.truncated ? " (content truncated; use Read to view full file)" : "";
+    return `[System: loaded ${loaded.source} from ${relPath}/${truncatedNote}]\n${loaded.content}`;
   }
 
   private recordToolResult(
@@ -705,4 +788,50 @@ export class Agent {
     this.ctx.session.append({ type: "message", time: new Date().toISOString(), message: toolMsg });
     this.ctx.events?.onToolResult?.(id, name, content, isError, summary);
   }
+}
+
+// ============================== II-1.3 子目录惰性 helpers ==============================
+
+/**
+ * 从工具 args 提路径字段。
+ *   - Read / Edit / Write 用 file_path
+ *   - Grep / Glob 用 path(可选)
+ *   - Bash 命令字符串不可靠(可能含多路径,跳过)
+ *   - 其他工具不提路径(返 null)
+ */
+export function extractToolPath(toolName: string, args: unknown): string | null {
+  if (typeof args !== "object" || args === null) return null;
+  if (toolName === "Read" || toolName === "Edit" || toolName === "Write") {
+    const fp = (args as { file_path?: unknown }).file_path;
+    if (typeof fp === "string") return fp;
+  }
+  if (toolName === "Grep" || toolName === "Glob") {
+    const p = (args as { path?: unknown }).path;
+    if (typeof p === "string") return p;
+  }
+  return null;
+}
+
+/**
+ * 从 absPath 的 dirname 开始向上找,直到 projectRoot(不含 root 本身) — 返回第一个
+ * 含 MUSE.md 或 AGENTS.md 的目录绝对路径。找不到返 null。
+ *
+ * 不返回 projectRoot 本身:root 的 MUSE.md / AGENTS.md 已在启动时由 loadHierarchy 加载,
+ * 不属于"子目录惰性"范围。
+ */
+export function findContainingSubdirWithHierarchy(absPath: string, projectRoot: string): string | null {
+  const rel = relative(projectRoot, absPath);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return null; // 不在 root 下
+
+  let cur = dirname(absPath);
+  // 边界:cur 必须严格在 projectRoot 内部
+  while (cur !== projectRoot && cur.startsWith(projectRoot)) {
+    if (existsSync(join(cur, "MUSE.md")) || existsSync(join(cur, "AGENTS.md"))) {
+      return cur;
+    }
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
 }

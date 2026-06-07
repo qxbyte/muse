@@ -3,7 +3,7 @@
  *
  * 由 SlashActions.showProgress/hideProgress 控制；目前 /compact 是首个使用者。
  *
- * 视觉对齐 Claude Code 的 /compact 体验：
+ * 视觉形态(参照业界 CLI Agent 的 /compact 风格)：
  *   ✦ <Title>... (Ns)
  *     ▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  24%
  *     └ Tip: <rotating>

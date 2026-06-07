@@ -13,6 +13,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { spawn } from "node:child_process";
 import { pickBanner } from "./components/StartupBanner.js";
 import { MessageView, BatchedToolBlock, BATCHABLE_TOOLS, TodoList, extractTodos, extractListTitle, type BatchedToolUse } from "./components/MessageView.js";
 import { PermissionPrompt, type PermissionRequest } from "./components/PermissionPrompt.js";
@@ -37,6 +38,8 @@ import { PermissionGate, type PermissionMode, type PermissionDecision } from "./
 import { Session, type SessionSummary } from "./session/jsonl.js";
 import { Agent } from "./loop/agent.js";
 import { loadMemoryIndex } from "./loop/memory.js";
+import { loadHierarchy, type HierarchyLayer } from "./loop/hierarchy.js";
+import { buildMemoryIndex, type MemoryIndex } from "./loop/memory-index.js";
 import { TodoStore } from "./loop/todos.js";
 import { InputPipeline, createInputCtx, buildUserMessage, type InputCtx } from "./preprocess/input/index.js";
 import { RequestPipeline } from "./preprocess/request/index.js";
@@ -99,10 +102,10 @@ interface UIState {
   stableUntilIdx: number;
   /** 本轮 sticky TodoList 的"起点":只显示 history[todosSinceTurnIdx..] 之间最新一次 TodoWrite 的 todos。
    *  每次 user_submit 时重置到当前 history 长度——旧 turn 的 TodoList 立即从底部消失。
-   *  这样实现 "TodoList 固定在输入框上方,跨工具调用持续可见" 的 Claude Code 体验。 */
+   *  这样实现 "TodoList 固定在输入框上方,跨工具调用持续可见" 的体验。 */
   todosSinceTurnIdx: number;
   /** turn 结束标记:每次 onTurnEnd 记录"该 turn 结束时 history 长度 + 时长",
-   *  渲染时在对应位置插入 `✶ Churned for Xm Ys` 灰色行(对齐 Claude Code 每 turn 末尾摘要)。
+   *  渲染时在对应位置插入 `✶ Churned for Xm Ys` 灰色行(turn 末尾摘要)。
    *  不进 session JSONL,resume 时旧 turn 的 churned 标记会丢,新 turn 仍会记录。 */
   turnEnds: Array<{ atHistoryLen: number; durationMs: number }>;
 }
@@ -467,6 +470,46 @@ export function App({
     };
   }, [cwd]);
 
+  // II-1:hierarchy(MUSE.md / AGENTS.md 5 层)— turn 起前一次性加载,变更 cwd 时重读
+  const [hierarchy, setHierarchy] = useState<HierarchyLayer[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    loadHierarchy(cwd).then((layers) => {
+      if (!cancelled) setHierarchy(layers);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cwd]);
+
+  // II-5:memory embedding index(启用时启动 + cwd / settings 变化时重建,失败完全降级)
+  const [memoryEmbeddingIndex, setMemoryEmbeddingIndex] = useState<MemoryIndex | undefined>(undefined);
+  const [memoryEmbeddingError, setMemoryEmbeddingError] = useState<string | undefined>(undefined);
+  const embeddingEnabled = settings.memory?.embedding?.enabled === true;
+  const embeddingProviderKind = settings.memory?.embedding?.provider;
+  useEffect(() => {
+    if (!embeddingEnabled) {
+      setMemoryEmbeddingIndex(undefined);
+      setMemoryEmbeddingError(undefined);
+      return;
+    }
+    let cancelled = false;
+    buildMemoryIndex(cwd, { config: settings.memory?.embedding })
+      .then((idx) => {
+        if (cancelled) return;
+        setMemoryEmbeddingIndex(idx);
+        setMemoryEmbeddingError(undefined);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setMemoryEmbeddingIndex(undefined);
+        setMemoryEmbeddingError((err as Error).message ?? String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cwd, embeddingEnabled, embeddingProviderKind, settings.memory?.embedding?.preset, settings.memory?.embedding?.model, settings.memory?.embedding?.dim, settings.memory?.embedding?.baseUrl]);
+
   // SessionStart / SessionEnd hooks
   const [sessionExtraPrompt, setSessionExtraPrompt] = useState<string>("");
   const turnCountRef = useRef<number>(0);
@@ -518,6 +561,10 @@ export function App({
       requestServices: {
         todos,
         memoryIndex,
+        hierarchy,
+        memoryEmbeddingIndex,
+        memoryEmbeddingTopK: settings.memory?.embedding?.topK,
+        memoryEmbeddingMinCount: settings.memory?.embedding?.minMemoryCount,
         toolRegistry: tools,
         lang,
         provider: llm.providerName,
@@ -604,7 +651,7 @@ export function App({
     });
     agent.setMessages(messagesRef.current);
     agentRef.current = agent;
-  }, [llm, tools, permissions, session, cwd, lang, memoryIndex, sessionExtraPrompt]);
+  }, [llm, tools, permissions, session, cwd, lang, memoryIndex, hierarchy, memoryEmbeddingIndex, sessionExtraPrompt]);
 
   // 键盘：Ctrl+C 全局退出 + Shift+Tab 循环切 permission mode + autocomplete ↑↓ Tab Esc 导航
   useInput(
@@ -762,6 +809,30 @@ export function App({
         new Promise<void>((resolve) => {
           // history 锁定在 /btw 触发的瞬间——后续即使主对话有新消息，/btw 看到的也是当时的快照
           setBtwRequest({ question, history: messagesRef.current, resolve });
+        }),
+      openInEditor: (filePath) =>
+        new Promise<void>((resolve, reject) => {
+          // 让出 TTY 给外部编辑器(vi/vim/nano/code 等)。
+          // Ink 暂停 raw mode → spawn editor with stdio:inherit → 退出后恢复。
+          // vi 系编辑器会接管 stdin/stdout,Ink 自动暂停渲染;退出后 Ink 看到 stdin 恢复 redraw。
+          const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+          try {
+            if (process.stdin.isTTY) process.stdin.setRawMode?.(false);
+          } catch {}
+          const child = spawn(editor, [filePath], { stdio: "inherit" });
+          child.on("exit", (code) => {
+            try {
+              if (process.stdin.isTTY) process.stdin.setRawMode?.(true);
+            } catch {}
+            if (code === 0) resolve();
+            else reject(new Error(`editor "${editor}" exited with code ${code}`));
+          });
+          child.on("error", (err) => {
+            try {
+              if (process.stdin.isTTY) process.stdin.setRawMode?.(true);
+            } catch {}
+            reject(new Error(`editor "${editor}" failed: ${err.message}`));
+          });
         }),
       reloadSettings: async () => {
         const { settings: nextSettings, sources } = await loadSettings(cwd);
@@ -1014,7 +1085,7 @@ export function App({
 
   /**
    * 双 Esc rewind:找最后一条 user message,把它的文本塞回输入框,删除它和它之后的所有消息。
-   * 这是 Claude Code "Double Esc time-machine" 的简化版(muse 没做 file checkpoint)。
+   * 这是 "Double Esc time-machine" 形态的简化版(muse 没做 file checkpoint)。
    * 返 true 表示成功 rewind,false 表示没东西可 rewind。
    */
   function rewindLastTurn(): boolean {
@@ -1149,7 +1220,7 @@ export function App({
       const msg = state.history[i];
       if (msg.role === "tool" && msg.toolUseId && inlinedIds.has(msg.toolUseId)) continue;
       // 跳过所有 TodoWrite-only assistant message:TodoWrite 现在全部交给底部 sticky TodoList
-      // 渲染,历史区不再显示(对齐 Claude Code 的固定底部体验)
+      // 渲染,历史区不再显示(固定底部体验)
       if (msg.role === "assistant" && Array.isArray(msg.content)) {
         const isTodoWriteOnly =
           msg.content.length > 0 &&
@@ -1284,7 +1355,7 @@ export function App({
               {/* 流式 markdown 渲染:已闭合 block(段/代码块/list)实时渲染成 ANSI
                   样式;未闭合段保留纯文本。Block 级缓存(React.memo + useMemo)
                   让闭合后的旧 block 不重 parse、不重 render — Ink 看到同样的 Text
-                  child 也会减少 erase,显著降低长输出的闪屏。Claude Code 同样思路。 */}
+                  child 也会减少 erase,显著降低长输出的闪屏(业界同样思路)。 */}
               <StreamingMarkdown text={state.streamingText} />
             </Box>
           </Box>
@@ -1508,7 +1579,7 @@ function isAbortLike(err: unknown): boolean {
   return false;
 }
 
-/** 单个 turn 结尾的灰色摘要行,对齐 Claude Code 的 `✶ Churned for Xm Ys` 风格。 */
+/** 单个 turn 结尾的灰色摘要行,`✶ Churned for Xm Ys` 风格。 */
 function ChurnedLine({ durationMs }: { durationMs: number }) {
   return (
     <Box marginTop={1}>

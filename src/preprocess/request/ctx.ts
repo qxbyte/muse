@@ -8,17 +8,35 @@ import type { Message, ToolDefinition } from "../../types/index.js";
 import type { PermissionMode } from "../../permission/index.js";
 import type { TodoStore } from "../../loop/todos.js";
 import type { ToolRegistry } from "../../tools/registry.js";
+import type { HierarchyLayer } from "../../loop/hierarchy.js";
+import type { MemoryIndex } from "../../loop/memory-index.js";
 
 export interface RequestPreprocessSettings {
   trimHistory?: { enabled?: boolean; budgetRatio?: number };
   budgetGuard?: { enabled?: boolean; budgetRatio?: number };
   redact?: { enabled?: boolean };
+  /** I-3 stale tool result clearing。默认开,keepRecentTurns=3,clearTools=[Read/Grep/Glob]。 */
+  clearStaleToolResults?: {
+    enabled?: boolean;
+    keepRecentTurns?: number;
+    clearTools?: string[];
+  };
 }
 
 export interface RequestServices {
   todos: TodoStore;
   /** 已加载的 MEMORY.md 索引(由 app/cli 在 turn 前刷新一次后注入)。 */
   memoryIndex: string;
+  /** 已加载的 hierarchy(MUSE.md / AGENTS.md 5 层)。II-1 引入。 */
+  hierarchy?: HierarchyLayer[];
+  /** 已构建的 memory 向量索引(II-5,settings.memory.embedding.enabled=true 时由 caller 注入)。 */
+  memoryEmbeddingIndex?: MemoryIndex;
+  /** memory.embedding.topK 配置;默认 5。 */
+  memoryEmbeddingTopK?: number;
+  /** memory.embedding.minMemoryCount;少于此值退化到全注入。默认 3(2026-06-07 R5 修订)。 */
+  memoryEmbeddingMinCount?: number;
+  /** memory.embedding.maxInjectTokens;注入预算上限,超出按 trust 优先级保留。默认 1500。 */
+  memoryEmbeddingMaxInjectTokens?: number;
   /** 工具注册中心,用于 toLLMDefinitions + tool 元数据。 */
   toolRegistry: ToolRegistry;
   /** 输出语言。 */

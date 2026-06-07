@@ -54,6 +54,7 @@ export const HooksConfigSchema = z.object({
   PostToolUse: z.array(HookSpecSchema).optional(),
   PreCompact: z.array(HookSpecSchema).optional(),
   PostCompact: z.array(HookSpecSchema).optional(),
+  MemoryPromote: z.array(HookSpecSchema).optional(),
 }).passthrough();
 
 export const InputPreprocessSettingsSchema = z.object({
@@ -135,7 +136,7 @@ export const SettingsSchema = z.object({
   hooks: HooksConfigSchema.optional(),
   preprocess: PreprocessSettingsSchema.optional(),
   /**
-   * 启动时注入到 process.env 的额外环境变量,仿 Claude Code 的 settings.env。
+   * 启动时注入到 process.env 的额外环境变量(对齐业界 CLI Agent 的 settings.env 模式)。
    * 值必须是字符串(JSON 无 number→env 的隐式转换;约束传 "1" / "0" 这种字面值)。
    *
    * 当前支持的 muse 自识别变量:
@@ -146,6 +147,34 @@ export const SettingsSchema = z.object({
    * (见 src/preprocess/hooks.ts),不会自动透传给 hook 命令,避免泄露密钥。
    */
   env: z.record(z.string()).optional(),
+  /** Memory 模块设置(II-5 向量索引)。 */
+  memory: z.object({
+    embedding: z.object({
+      /** 启用 embedding 召回(默认 false;关闭时 inject-memory 走传统全文)。 */
+      enabled: z.boolean().optional(),
+      /** 后端 provider。默认 hash-bag(零依赖);设了 preset 自动走 openai-compatible。 */
+      provider: z.enum(["hash-bag", "openai-compatible", "openai", "local-minilm"]).optional(),
+      /** Preset 名(dashscope-v3 / openai-3-small / openai-3-large / zhipu-3 / ollama-nomic / ollama-bge-m3)。 */
+      preset: z.string().optional(),
+      /** Base URL(覆盖 preset 默认或自定义 provider 时填)。 */
+      baseUrl: z.string().optional(),
+      /** 模型名(覆盖 preset 默认或自定义 provider 时填)。 */
+      model: z.string().optional(),
+      /** 向量维度(用户根据模型官方说明调整;preset 给推荐默认,可覆盖)。
+       *  设了此字段 → HTTP 请求带 dimensions 参数(MRL truncation);
+       *  没设 → 走模型默认。
+       *  启动期 muse 会 probe 一次校验实际维度,不匹配则降级 hash-bag + 提示修正。 */
+      dim: z.number().int().positive().optional(),
+      /** API key(${ENV_VAR} 或明文;Ollama 等本地端点可省)。 */
+      apiKey: z.string().optional(),
+      /** 检索 top-K(默认 5)。 */
+      topK: z.number().int().positive().optional(),
+      /** memory 数量低于此值时退化到全注入(默认 3,2026-06-07 R5 修订)。 */
+      minMemoryCount: z.number().int().nonnegative().optional(),
+      /** 注入 token 预算上限,超出按 trust 优先保留(默认 1500)。 */
+      maxInjectTokens: z.number().int().positive().optional(),
+    }).optional(),
+  }).optional(),
 }).passthrough();
 
 export type Settings = z.infer<typeof SettingsSchema>;

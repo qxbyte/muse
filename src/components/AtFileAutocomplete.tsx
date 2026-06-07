@@ -10,7 +10,7 @@
  *   - focused 行整条变紫色 + bold
  *   - 超过 maxVisible 行窗口截取,顶部 / 底部箭头提示
  *
- * 仿 Claude Code 截图:文件 `+ name`,目录 `+ dirname/`。
+ * @ 引用补全风格:文件 `+ name`,目录 `+ dirname/`。
  */
 
 import React from "react";
