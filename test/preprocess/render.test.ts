@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderMarkdown } from "../../src/preprocess/render/index.js";
+import { renderMarkdown, collapseLong } from "../../src/preprocess/render/index.js";
 
 // 剥 ANSI 转义码,只看可见文本
 function stripAnsi(s: string): string {
@@ -62,5 +62,59 @@ describe("renderMarkdown", () => {
   it("strips top-level \\x1b[0m to avoid bg-band break", () => {
     const out = renderMarkdown("## title\n\nbody");
     expect(out).not.toMatch(/\x1b\[0m/);
+  });
+});
+
+describe("collapseLong", () => {
+  it("short content (under maxLines) is not collapsed", () => {
+    const out = collapseLong("a\nb\nc", { maxLines: 10 });
+    expect(out.collapsed).toBe(false);
+    expect(out.head).toEqual(["a", "b", "c"]);
+    expect(out.tail).toEqual([]);
+    expect(out.omittedLines).toBe(0);
+  });
+
+  it("exactly at maxLines is not collapsed", () => {
+    const lines = Array.from({ length: 5 }, (_, i) => `L${i}`);
+    const out = collapseLong(lines.join("\n"), { maxLines: 5 });
+    expect(out.collapsed).toBe(false);
+    expect(out.head).toHaveLength(5);
+  });
+
+  it("over maxLines folds into head + tail", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `L${i}`);
+    const out = collapseLong(lines.join("\n"), {
+      maxLines: 10,
+      headLines: 3,
+      tailLines: 2,
+    });
+    expect(out.collapsed).toBe(true);
+    expect(out.head).toEqual(["L0", "L1", "L2"]);
+    expect(out.tail).toEqual(["L18", "L19"]);
+    expect(out.omittedLines).toBe(15);
+  });
+
+  it("default opts: 200 maxLines, 5 head + 5 tail", () => {
+    const lines = Array.from({ length: 300 }, (_, i) => `L${i}`);
+    const out = collapseLong(lines.join("\n"));
+    expect(out.collapsed).toBe(true);
+    expect(out.head).toHaveLength(5);
+    expect(out.tail).toHaveLength(5);
+    expect(out.omittedLines).toBe(290);
+    expect(out.head[0]).toBe("L0");
+    expect(out.tail[4]).toBe("L299");
+  });
+
+  it("misconfigured head+tail >= maxLines: degrades safely", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `L${i}`);
+    // headLines + tailLines > maxLines:实装走"按比例缩"分支
+    const out = collapseLong(lines.join("\n"), {
+      maxLines: 10,
+      headLines: 100,
+      tailLines: 100,
+    });
+    expect(out.collapsed).toBe(true);
+    expect(out.head.length + out.tail.length).toBeLessThan(20);
+    expect(out.omittedLines).toBeGreaterThan(0);
   });
 });
