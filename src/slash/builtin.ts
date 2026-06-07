@@ -30,25 +30,75 @@ import {
   type MemoryType,
 } from "../loop/memory.js";
 import { buildMemoryIndex, queryMemoryIndex } from "../loop/memory-index.js";
+import { EMBEDDING_PRESETS, listPresetNames, createAndProbeProvider } from "../loop/embedding/index.js";
+import { memoryDir, globalMemoryDir } from "../loop/memory.js";
+import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import type { LLMClient } from "../llm/types.js";
 
 // ----- /help -----
 
+/** /help 命令分类(命令名顺序即输出顺序)。未列入此处的新命令会进 "Other"。 */
+const HELP_CATEGORIES: Array<{ title: string; names: string[] }> = [
+  { title: "Chat & turn control", names: ["help", "clear", "compact", "resume", "cost", "btw"] },
+  { title: "Memory", names: ["memory", "remember"] },
+  { title: "Configuration", names: ["model", "config", "mode", "mcp"] },
+  { title: "Exit", names: ["exit"] },
+];
+
+const KEY_BINDINGS = [
+  "Key bindings:",
+  "  Enter         submit",
+  "  \\ + Enter     newline (multiline input)",
+  "  Esc           cancel current LLM / tool, or clear guidance queue",
+  "  Esc Esc       rewind: pull last user message back into input, drop everything after",
+  "  Shift+Tab     cycle permission mode (default / acceptEdits / plan / bypassPermissions)",
+  "  Ctrl+C        exit muse (or cancel running tool first)",
+  "  ↑ / ↓         history navigation",
+  "  Cmd/Ctrl+V    paste (text or clipboard image)",
+  "  @<path>       file reference autocomplete",
+  "  /             slash command autocomplete",
+].join("\n");
+
 const HELP: SlashCommand = {
   name: "help",
-  description: "show available slash commands",
+  description: "show available slash commands + key bindings",
   execute(ctx) {
     const cmds = ctx.listCommands();
-    const heads = cmds.map(headOf);
-    const width = Math.max(...heads.map((h) => h.length));
-    const lines = ["Built-in commands:"];
-    for (let i = 0; i < cmds.length; i++) {
-      const aliasNote = cmds[i].aliases?.length
-        ? `  (alias: ${cmds[i].aliases!.map((a) => `/${a}`).join(", ")})`
-        : "";
-      lines.push(`  /${heads[i].padEnd(width)}   ${cmds[i].description}${aliasNote}`);
+    const byName = new Map(cmds.map((c) => [c.name, c]));
+    const maxHeadLen = Math.max(...cmds.map((c) => headOf(c).length));
+
+    const lines: string[] = ["Built-in commands:"];
+    const seen = new Set<string>();
+
+    for (const cat of HELP_CATEGORIES) {
+      const catCmds = cat.names.map((n) => byName.get(n)).filter((c): c is SlashCommand => !!c);
+      if (catCmds.length === 0) continue;
+      lines.push("");
+      lines.push(`  ${cat.title}:`);
+      for (const cmd of catCmds) {
+        seen.add(cmd.name);
+        const head = headOf(cmd);
+        const aliasNote = cmd.aliases?.length
+          ? `  (alias: ${cmd.aliases.map((a) => `/${a}`).join(", ")})`
+          : "";
+        lines.push(`    /${head.padEnd(maxHeadLen)}   ${cmd.description}${aliasNote}`);
+      }
     }
-    lines.push("", "Keys:  Ctrl+C  exit");
+
+    // 漏网之鱼(防止新命令未分类时不显示)
+    const uncat = cmds.filter((c) => !seen.has(c.name));
+    if (uncat.length > 0) {
+      lines.push("");
+      lines.push(`  Other:`);
+      for (const cmd of uncat) {
+        const head = headOf(cmd);
+        lines.push(`    /${head.padEnd(maxHeadLen)}   ${cmd.description}`);
+      }
+    }
+
+    lines.push("", KEY_BINDINGS);
     return { display: lines.join("\n") };
   },
 };
@@ -503,7 +553,8 @@ const MEMORY_HELP = [
   `  /memory promote-scope <name>         project → user (lift to global scope)`,
   `  /memory trust <name> <level>         set trust (verified | auto;`,
   `                                       trusted reserved for MUSE.md / AGENTS.md)`,
-  `  /memory search <query>               vector-based semantic search (II-5)`,
+  `  /memory search <query>               vector-based semantic search`,
+  `  /memory diagnose                     show embedding status + config + fix tips`,
   ``,
   `Scopes:`,
   `  [project]  per-project memory: ~/.muse/projects/<hash>/memory/`,
@@ -570,6 +621,9 @@ const MEMORY: SlashCommand = {
           if (!query) return { display: `Usage: /memory search <query>` };
           return await memorySearch(ctx.cwd, query);
         }
+        case "diagnose":
+        case "doctor":
+          return await memoryDiagnose(ctx.cwd, ctx.settings);
         case "help":
           return { display: MEMORY_HELP };
         default:
@@ -644,6 +698,119 @@ async function memoryPromoteScope(cwd: string, name: string) {
       `It is now visible across ALL projects on this machine.\n` +
       `(source set to "promote-scope"; trust preserved.)`,
   };
+}
+
+/** /memory diagnose: 当前 embedding 状态 + 配置 + 修复建议。
+ *  这是用户启用 embedding 后失败排查的入口。 */
+async function memoryDiagnose(cwd: string, settings: import("../config/types.js").Settings) {
+  const lines: string[] = ["Memory diagnose:"];
+  const emb = settings.memory?.embedding;
+
+  // 启用状态
+  lines.push(``);
+  lines.push(`  Embedding enabled:  ${emb?.enabled === true ? "YES" : "NO (default; using MEMORY.md full-text injection)"}`);
+  if (!emb?.enabled) {
+    lines.push(``);
+    lines.push(`  To enable embedding recall, add to ~/.muse/settings.local.json:`);
+    lines.push(`    {`);
+    lines.push(`      "memory": {`);
+    lines.push(`        "embedding": {`);
+    lines.push(`          "enabled": true,`);
+    lines.push(`          "preset": "dashscope-v3",      // or openai-3-small / ollama-nomic / etc.`);
+    lines.push(`          "apiKey": "\${DASHSCOPE_API_KEY}"`);
+    lines.push(`        }`);
+    lines.push(`      }`);
+    lines.push(`    }`);
+    lines.push(``);
+    lines.push(`  Available presets:`);
+    for (const name of listPresetNames()) {
+      const p = EMBEDDING_PRESETS[name];
+      lines.push(`    ${name.padEnd(18)} dim=${String(p.dim).padEnd(5)} ${p.requiresKey ? "needs key" : "no key"}  — ${p.description}`);
+    }
+    return { display: lines.join("\n") };
+  }
+
+  // 配置详情
+  lines.push(``);
+  lines.push(`  Configuration:`);
+  if (emb.preset) {
+    const preset = EMBEDDING_PRESETS[emb.preset];
+    if (preset) {
+      lines.push(`    preset:           ${emb.preset}`);
+      lines.push(`    preset baseUrl:   ${preset.baseUrl}${emb.baseUrl ? ` (overridden: ${emb.baseUrl})` : ""}`);
+      lines.push(`    preset model:     ${preset.model}${emb.model ? ` (overridden: ${emb.model})` : ""}`);
+      lines.push(`    preset dim:       ${preset.dim}${emb.dim !== undefined ? ` (overridden: ${emb.dim}, will send dimensions= parameter)` : ""}`);
+      lines.push(`    needs apiKey:     ${preset.requiresKey ? "yes" : "no"}`);
+    } else {
+      lines.push(`    preset:           ${emb.preset}  ⚠ UNKNOWN preset!`);
+      lines.push(`    Valid presets:    ${listPresetNames().join(", ")}`);
+    }
+  } else if (emb.provider) {
+    lines.push(`    provider:         ${emb.provider} (custom)`);
+    lines.push(`    baseUrl:          ${emb.baseUrl ?? "(missing)"}`);
+    lines.push(`    model:            ${emb.model ?? "(missing)"}`);
+    lines.push(`    dim:              ${emb.dim ?? "(missing)"}`);
+  } else {
+    lines.push(`    ⚠ Neither preset nor provider set — embedding will be disabled`);
+  }
+  lines.push(`    apiKey set:       ${emb.apiKey ? "yes (will be redacted in logs)" : "no"}`);
+  lines.push(`    topK:             ${emb.topK ?? 5}  (default)`);
+  lines.push(`    minMemoryCount:   ${emb.minMemoryCount ?? 3}  (default)`);
+  lines.push(`    maxInjectTokens:  ${emb.maxInjectTokens ?? 1500}  (default)`);
+
+  // 索引文件状态
+  lines.push(``);
+  lines.push(`  Index files (.index.json):`);
+  for (const [label, dir] of [["project", memoryDir(cwd)], ["user", globalMemoryDir()]] as const) {
+    const idxPath = join(dir, ".index.json");
+    if (existsSync(idxPath)) {
+      let size = 0;
+      let mtime = "?";
+      try {
+        const st = statSync(idxPath);
+        size = st.size;
+        mtime = st.mtime.toISOString();
+      } catch {}
+      lines.push(`    [${label}] ${idxPath}`);
+      lines.push(`             size=${size}B  mtime=${mtime}`);
+    } else {
+      lines.push(`    [${label}] ${idxPath}  (not built yet)`);
+    }
+  }
+
+  // 实时 probe(可选;只做轻量探针,不构建索引)
+  lines.push(``);
+  lines.push(`  Live probe:`);
+  try {
+    const provider = await createAndProbeProvider(emb);
+    lines.push(`    ✓ provider OK  id=${provider.id}  dim=${provider.dim}`);
+  } catch (err) {
+    lines.push(`    ✗ FAILED: ${(err as Error).message}`);
+    lines.push(``);
+    lines.push(`  Fix suggestions:`);
+    const msg = (err as Error).message;
+    if (msg.includes("dimension mismatch")) {
+      lines.push(`    → Model returned a different dim than configured. Set settings.memory.embedding.dim to the actual value shown above.`);
+    } else if (msg.includes("requires apiKey")) {
+      lines.push(`    → Set settings.memory.embedding.apiKey (\${ENV_VAR} supported).`);
+    } else if (msg.includes("Unknown preset") || msg.includes("Unknown embedding")) {
+      lines.push(`    → Valid presets: ${listPresetNames().join(", ")}`);
+    } else if (msg.includes("HTTP 401") || msg.includes("Unauthorized")) {
+      lines.push(`    → API key invalid. Re-check the env var or value.`);
+    } else if (msg.includes("HTTP 429")) {
+      lines.push(`    → Rate-limited or quota exhausted. Wait, or upgrade your plan.`);
+    } else if (msg.includes("HTTP 404")) {
+      lines.push(`    → Model not found. Check the model name; for Ollama, run \`ollama pull <model>\`.`);
+    } else if (msg.includes("timeout") || msg.includes("network error")) {
+      lines.push(`    → Network unreachable. Check baseUrl, firewall, VPN.`);
+    } else {
+      lines.push(`    → See the error above for details. Common causes: wrong key / model / baseUrl / network.`);
+    }
+    lines.push(``);
+    lines.push(`  While embedding is broken, muse falls back to MEMORY.md full-text injection automatically.`);
+  }
+
+  return { display: lines.join("\n") };
 }
 
 async function memorySearch(cwd: string, query: string) {

@@ -19,13 +19,13 @@ export interface EmbeddingProvider {
   embedBatch(texts: string[]): Promise<number[][]>;
 }
 
-export type EmbeddingProviderKind = "hash-bag" | "local-minilm" | "openai";
+export type EmbeddingProviderKind = "hash-bag" | "openai-compatible" | "openai" | "local-minilm";
 
 export interface EmbeddingConfig {
-  /** 默认 hash-bag(本期唯一可用)。 */
+  /** 默认 hash-bag(零依赖)。 */
   provider?: EmbeddingProviderKind;
-  /** 模型名(local-minilm / openai 用)。 */
+  /** 模型名(用户覆盖 preset 默认或自定义 provider 时填)。 */
   model?: string;
-  /** OpenAI API key(env var 或明文)。 */
+  /** API key(${ENV_VAR} 或明文;Ollama 等本地端点可省)。 */
   apiKey?: string;
 }

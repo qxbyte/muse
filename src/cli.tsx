@@ -224,15 +224,27 @@ async function runOneShot(opts: {
 }): Promise<void> {
   const memoryIndex = await loadMemoryIndex(opts.cwd);
   const hierarchy = await loadHierarchy(opts.cwd);
-  // II-5:启用时构建 memory embedding index(失败降级到全文)
+  // II-5:启用时构建 memory embedding index(失败完全降级,不阻塞 muse 启动)
   let memoryEmbeddingIndex: MemoryIndex | undefined;
   if (opts.settings.memory?.embedding?.enabled) {
     try {
       memoryEmbeddingIndex = await buildMemoryIndex(opts.cwd, {
         config: opts.settings.memory.embedding,
       });
+      if (!opts.quiet) {
+        const entries = memoryEmbeddingIndex.entries.length;
+        process.stderr.write(
+          `[memory] embedding ready: provider=${memoryEmbeddingIndex.provider.id}, indexed ${entries} memor${entries === 1 ? "y" : "ies"}\n`,
+        );
+      }
     } catch (err) {
-      if (!opts.quiet) process.stderr.write(`[memory embedding] build failed: ${(err as Error).message}. Falling back to full-text mode.\n`);
+      if (!opts.quiet) {
+        process.stderr.write(
+          `[memory] embedding init failed: ${(err as Error).message}\n` +
+            `[memory] falling back to MEMORY.md full-text mode (memory still works, just keyword-based).\n` +
+            `         Run \`/memory diagnose\` inside muse for details and fix suggestions.\n`,
+        );
+      }
     }
   }
   const sessionStartTime = Date.now();

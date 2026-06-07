@@ -42,7 +42,14 @@ import {
   SCOPES,
   trustRank,
 } from "./memory.js";
-import { createEmbeddingProvider, cosineSimilarity, type EmbeddingProvider, type EmbeddingConfig } from "./embedding/index.js";
+import {
+  createEmbeddingProvider,
+  createAndProbeProvider,
+  cosineSimilarity,
+  type EmbeddingProvider,
+  type EmbeddingConfig,
+  type ExtendedEmbeddingConfig,
+} from "./embedding/index.js";
 
 export interface MemoryIndexEntry {
   name: string;
@@ -87,11 +94,13 @@ interface PersistentEntry {
 }
 
 export interface BuildIndexOpts {
-  config?: EmbeddingConfig;
+  config?: ExtendedEmbeddingConfig;
   /** 自定义 provider(测试用);提供时覆盖 config。 */
   provider?: EmbeddingProvider;
   /** 是否禁用磁盘持久化(测试 / 临时场景)。默认 false。 */
   noPersist?: boolean;
+  /** 是否跳过 probe 校验(测试 / hash-bag 场景默认跳过)。默认 false(自动按 provider id 判断)。 */
+  skipProbe?: boolean;
 }
 
 function indexPath(cwd: string, scope: Scope): string {
@@ -168,7 +177,15 @@ function makeEntry(name: string, scope: Scope, p: PersistentEntry): MemoryIndexE
  * 输出合并的 entries(每条带 scope 字段),按 scope 顺序 project → user。
  */
 export async function buildMemoryIndex(cwd: string, opts: BuildIndexOpts = {}): Promise<MemoryIndex> {
-  const provider = opts.provider ?? createEmbeddingProvider(opts.config);
+  // 优先用 caller 注入的 provider;否则按配置创建并(默认)做 probe 校验
+  let provider: EmbeddingProvider;
+  if (opts.provider) {
+    provider = opts.provider;
+  } else if (opts.skipProbe) {
+    provider = createEmbeddingProvider(opts.config);
+  } else {
+    provider = await createAndProbeProvider(opts.config ?? {});
+  }
   const allEntries: MemoryIndexEntry[] = [];
 
   for (const scope of SCOPES) {

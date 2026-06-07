@@ -152,11 +152,20 @@ export const SettingsSchema = z.object({
     embedding: z.object({
       /** 启用 embedding 召回(默认 false;关闭时 inject-memory 走传统全文)。 */
       enabled: z.boolean().optional(),
-      /** 后端 provider。本期支持 hash-bag(零依赖);local-minilm / openai 留下批。 */
-      provider: z.enum(["hash-bag", "local-minilm", "openai"]).optional(),
-      /** 模型名(local-minilm / openai 用;hash-bag 忽略)。 */
+      /** 后端 provider。默认 hash-bag(零依赖);设了 preset 自动走 openai-compatible。 */
+      provider: z.enum(["hash-bag", "openai-compatible", "openai", "local-minilm"]).optional(),
+      /** Preset 名(dashscope-v3 / openai-3-small / openai-3-large / zhipu-3 / ollama-nomic / ollama-bge-m3)。 */
+      preset: z.string().optional(),
+      /** Base URL(覆盖 preset 默认或自定义 provider 时填)。 */
+      baseUrl: z.string().optional(),
+      /** 模型名(覆盖 preset 默认或自定义 provider 时填)。 */
       model: z.string().optional(),
-      /** OpenAI API key(env var 或明文)。 */
+      /** 向量维度(用户根据模型官方说明调整;preset 给推荐默认,可覆盖)。
+       *  设了此字段 → HTTP 请求带 dimensions 参数(MRL truncation);
+       *  没设 → 走模型默认。
+       *  启动期 muse 会 probe 一次校验实际维度,不匹配则降级 hash-bag + 提示修正。 */
+      dim: z.number().int().positive().optional(),
+      /** API key(${ENV_VAR} 或明文;Ollama 等本地端点可省)。 */
       apiKey: z.string().optional(),
       /** 检索 top-K(默认 5)。 */
       topK: z.number().int().positive().optional(),

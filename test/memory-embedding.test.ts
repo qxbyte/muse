@@ -129,12 +129,12 @@ describe("II-5 — createEmbeddingProvider factory", () => {
     expect(p.id).toMatch(/^hash-bag/);
   });
 
-  it("local-minilm 抛错(本期未实装)", () => {
-    expect(() => createEmbeddingProvider({ provider: "local-minilm" })).toThrow(/@xenova\/transformers/);
+  it("local-minilm 抛错(留下批,需 @huggingface/transformers)", () => {
+    expect(() => createEmbeddingProvider({ provider: "local-minilm" })).toThrow(/@huggingface\/transformers/);
   });
 
-  it("openai 抛错(本期未实装)", () => {
-    expect(() => createEmbeddingProvider({ provider: "openai" })).toThrow(/HTTP integration/);
+  it("openai 缺 apiKey 抛错", () => {
+    expect(() => createEmbeddingProvider({ provider: "openai" })).toThrow(/requires apiKey/);
   });
 });
 

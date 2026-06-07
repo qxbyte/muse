@@ -481,27 +481,33 @@ export function App({
     };
   }, [cwd]);
 
-  // II-5:memory embedding index(启用时启动 + cwd / settings 变化时重建,失败降级)
+  // II-5:memory embedding index(启用时启动 + cwd / settings 变化时重建,失败完全降级)
   const [memoryEmbeddingIndex, setMemoryEmbeddingIndex] = useState<MemoryIndex | undefined>(undefined);
+  const [memoryEmbeddingError, setMemoryEmbeddingError] = useState<string | undefined>(undefined);
   const embeddingEnabled = settings.memory?.embedding?.enabled === true;
   const embeddingProviderKind = settings.memory?.embedding?.provider;
   useEffect(() => {
     if (!embeddingEnabled) {
       setMemoryEmbeddingIndex(undefined);
+      setMemoryEmbeddingError(undefined);
       return;
     }
     let cancelled = false;
     buildMemoryIndex(cwd, { config: settings.memory?.embedding })
       .then((idx) => {
-        if (!cancelled) setMemoryEmbeddingIndex(idx);
+        if (cancelled) return;
+        setMemoryEmbeddingIndex(idx);
+        setMemoryEmbeddingError(undefined);
       })
-      .catch(() => {
-        if (!cancelled) setMemoryEmbeddingIndex(undefined);
+      .catch((err) => {
+        if (cancelled) return;
+        setMemoryEmbeddingIndex(undefined);
+        setMemoryEmbeddingError((err as Error).message ?? String(err));
       });
     return () => {
       cancelled = true;
     };
-  }, [cwd, embeddingEnabled, embeddingProviderKind, settings.memory?.embedding?.model]);
+  }, [cwd, embeddingEnabled, embeddingProviderKind, settings.memory?.embedding?.preset, settings.memory?.embedding?.model, settings.memory?.embedding?.dim, settings.memory?.embedding?.baseUrl]);
 
   // SessionStart / SessionEnd hooks
   const [sessionExtraPrompt, setSessionExtraPrompt] = useState<string>("");
