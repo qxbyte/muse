@@ -1,15 +1,16 @@
 /**
  * 上下文管理：手动 / 自动压缩对话历史。
  *
- * 设计文档：muse-design.md §5.3 上下文管理。
+ * 设计文档：muse-design.md §5.3 / 模块设计/上下文管理工程/设计.md §4.2 + §4.5。
  *
  * 算法：
  *   1. 找一个安全切割点 cutoff：cutoff 之前是 "older"，之后是 "recent"
  *   2. 安全 = 不破坏 assistant 的 tool_use ↔ 紧随的 tool 消息 配对
  *      （在 tool_use 之后但 tool result 之前切，会让 LLM 看到悬挂的 tool_use）
- *   3. older 拼成转录，调 LLM 摘要成一段
- *   4. 摘要包成一条 user message（"[Previous conversation summary] ..."），
+ *   3. older 拼成转录，调 LLM 摘要(I-2:9 节结构化 schema,带 facts JSON)
+ *   4. 摘要剥 facts JSON 后包成一条 user message（"[Previous conversation summary] ..."），
  *      作为新历史的开头，后接 recent
+ *   5. I-5:facts 经 MemoryPromote hook 后 writeMemory(trust=auto, source=compact-promote)
  *
  * Why user 角色而非 system：
  *   - 系统提示 muse 已在 systemPrompt 单独管理；不污染它
@@ -21,6 +22,14 @@ import type { Message, AssistantMessage, ContentPart } from "../types/index.js";
 import type { HooksConfig } from "../preprocess/hooks.js";
 import { runHooks } from "../preprocess/hooks.js";
 import { PipelineBlockedError } from "../preprocess/pipeline.js";
+import {
+  buildSummaryPrompt,
+  extractFacts,
+  stripFactsBlock,
+  type ExtractedFact,
+  type SummarySchema,
+} from "./prompts/summarize.js";
+import { writeMemory } from "./memory.js";
 
 export interface CompactOptions {
   llm: LLMClient;
@@ -29,8 +38,15 @@ export interface CompactOptions {
   abortSignal?: AbortSignal;
   /** LLM 摘要流式过程中的字符进度回调（每个 text-delta 触发，传累计字符数）。 */
   onProgress?: (charsReceived: number) => void;
-  /** PreCompact / PostCompact hooks 配置。 */
+  /** PreCompact / PostCompact / MemoryPromote hooks 配置。 */
   hooks?: HooksConfig;
+  /** I-2 schema 选择;默认 "9-section"。 */
+  schema?: SummarySchema;
+  /** I-5 联动:本次 compact 触发的 cwd,用于 writeMemory 写到正确项目下。
+   *  未提供时跳过 facts 提取(纯摘要模式)。 */
+  cwd?: string;
+  /** I-5:是否自动把 facts 写入 memory(默认 true)。 */
+  promoteFactsToMemory?: boolean;
 }
 
 export class CompactBlockedError extends Error {
@@ -47,6 +63,17 @@ export interface CompactResult {
   newCount: number;
   /** 没有可压缩内容时为 true，messages 原样返回。 */
   noop: boolean;
+  /** I-5:被提取并尝试写入 memory 的 facts(可能被 hook block 部分)。 */
+  promotedFacts?: PromotedFact[];
+}
+
+export interface PromotedFact {
+  name: string;
+  type: ExtractedFact["type"];
+  description: string;
+  /** 写入结果:"saved" / "blocked"(MemoryPromote hook 拒绝)/ "failed"(writeMemory 错)。 */
+  status: "saved" | "blocked" | "failed";
+  reason?: string;
 }
 
 export async function compactMessages(
@@ -82,7 +109,18 @@ export async function compactMessages(
 
   const older = messages.slice(0, cutoff);
   const recent = messages.slice(cutoff);
-  const summary = await summarizeConversation(older, opts.llm, opts.abortSignal, opts.onProgress);
+  const schema: SummarySchema = opts.schema ?? "9-section";
+  const rawSummary = await summarizeConversation(
+    older,
+    opts.llm,
+    schema,
+    opts.abortSignal,
+    opts.onProgress,
+  );
+
+  // I-2:剥 facts JSON 块,留人类可读摘要主体
+  const summary = stripFactsBlock(rawSummary);
+  const facts = opts.cwd ? extractFacts(rawSummary) : [];
 
   const summaryMessage: Message = {
     role: "user",
@@ -97,7 +135,7 @@ export async function compactMessages(
   try {
     await runHooks(
       "PostCompact",
-      { before: messages.length, after: newMessages.length, summary },
+      { before: messages.length, after: newMessages.length, summary, factCount: facts.length },
       opts.hooks,
     );
   } catch (err) {
@@ -108,13 +146,86 @@ export async function compactMessages(
     }
   }
 
+  // I-5:把 facts 写入 memory(每条走 MemoryPromote hook 审核;失败不阻塞 compact)
+  let promotedFacts: PromotedFact[] | undefined;
+  const shouldPromote = opts.promoteFactsToMemory !== false && opts.cwd && facts.length > 0;
+  if (shouldPromote) {
+    promotedFacts = await promoteFactsToMemory(facts, opts.cwd!, opts.hooks);
+  }
+
   return {
     newMessages,
     summary,
     originalCount: messages.length,
     newCount: newMessages.length,
     noop: false,
+    promotedFacts,
   };
+}
+
+/**
+ * I-5:把 ExtractedFact 列表写入 long-term memory。
+ *
+ * 行为:
+ *   - 每条独立处理(失败不影响下一条)
+ *   - MemoryPromote hook 可 block:该条标记 status=blocked + reason
+ *   - writeMemory 异常:status=failed + reason
+ *   - 成功:status=saved,trust=auto + source=compact-promote
+ */
+async function promoteFactsToMemory(
+  facts: ExtractedFact[],
+  cwd: string,
+  hooks: HooksConfig | undefined,
+): Promise<PromotedFact[]> {
+  const results: PromotedFact[] = [];
+  for (const fact of facts) {
+    try {
+      await runHooks(
+        "MemoryPromote",
+        { name: fact.name, type: fact.type, description: fact.description, body: fact.body, source: "compact-promote" },
+        hooks,
+      );
+    } catch (err) {
+      if (err instanceof PipelineBlockedError) {
+        results.push({
+          name: fact.name,
+          type: fact.type,
+          description: fact.description,
+          status: "blocked",
+          reason: err.reason,
+        });
+        continue;
+      }
+      results.push({
+        name: fact.name,
+        type: fact.type,
+        description: fact.description,
+        status: "failed",
+        reason: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
+    try {
+      await writeMemory(cwd, {
+        name: fact.name,
+        description: fact.description,
+        type: fact.type,
+        body: fact.body,
+        trust: "auto",
+        source: "compact-promote",
+      });
+      results.push({ name: fact.name, type: fact.type, description: fact.description, status: "saved" });
+    } catch (err) {
+      results.push({
+        name: fact.name,
+        type: fact.type,
+        description: fact.description,
+        status: "failed",
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return results;
 }
 
 /**
@@ -157,6 +268,7 @@ function hasUnresolvedToolUse(older: Message[]): boolean {
 async function summarizeConversation(
   older: Message[],
   llm: LLMClient,
+  schema: SummarySchema,
   abortSignal?: AbortSignal,
   onProgress?: (chars: number) => void,
 ): Promise<string> {
@@ -164,14 +276,7 @@ async function summarizeConversation(
   const prompt: Message[] = [
     {
       role: "user",
-      content:
-        `Summarize the following conversation in 200-400 words. Focus on:\n` +
-        `1. The user's task and goals\n` +
-        `2. Key decisions and approaches taken\n` +
-        `3. Files or code touched (paths + what changed)\n` +
-        `4. Outstanding questions or pending work\n\n` +
-        `Be concrete. Do not invent details. Use short bullet points where appropriate.\n\n` +
-        `--- BEGIN CONVERSATION ---\n${transcript}\n--- END CONVERSATION ---`,
+      content: buildSummaryPrompt(transcript, schema),
     },
   ];
 

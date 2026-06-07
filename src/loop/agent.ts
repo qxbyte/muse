@@ -447,10 +447,12 @@ export class Agent {
           // compact 闭包:budget-guard 触发时调用。真实改写 this.messages
           // (compact 是历史压缩,不可逆,要落到 agent state)。
           compact: async (signal) => {
+            // I-5 联动:传 cwd 触发 facts 自动 promote 到 long-term memory
             const result = await compactMessages(this.messages, {
               llm: this.ctx.llm,
               abortSignal: signal,
               hooks: this.ctx.hooks,
+              cwd: this.ctx.cwd,
             });
             this.messages = result.newMessages;
             return this.messages;

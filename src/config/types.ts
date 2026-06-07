@@ -54,6 +54,7 @@ export const HooksConfigSchema = z.object({
   PostToolUse: z.array(HookSpecSchema).optional(),
   PreCompact: z.array(HookSpecSchema).optional(),
   PostCompact: z.array(HookSpecSchema).optional(),
+  MemoryPromote: z.array(HookSpecSchema).optional(),
 }).passthrough();
 
 export const InputPreprocessSettingsSchema = z.object({

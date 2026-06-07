@@ -160,6 +160,7 @@ const COMPACT: SlashCommand = {
         llm: ctx.llm,
         keepRecent,
         hooks: ctx.settings.hooks,
+        cwd: ctx.cwd,                  // I-5:触发 facts → memory promote
         onProgress: (chars) => {
           progressRef.chars = chars;
         },
@@ -169,16 +170,29 @@ const COMPACT: SlashCommand = {
       }
       ctx.actions.setMessages(result.newMessages);
       const preview = result.summary.length > 240 ? result.summary.slice(0, 240) + "…" : result.summary;
+      const promoteNote = renderPromotedFactsNote(result.promotedFacts);
       return {
         display:
           `Compacted ${result.originalCount} → ${result.newCount} messages ` +
-          `(kept last ${keepRecent}).\n\nSummary:\n${preview}`,
+          `(kept last ${keepRecent}).\n\nSummary:\n${preview}${promoteNote}`,
       };
     } finally {
       ctx.actions.hideProgress();
     }
   },
 };
+
+function renderPromotedFactsNote(facts?: import("../loop/context.js").PromotedFact[]): string {
+  if (!facts || facts.length === 0) return "";
+  const saved = facts.filter((f) => f.status === "saved");
+  const blocked = facts.filter((f) => f.status === "blocked");
+  const failed = facts.filter((f) => f.status === "failed");
+  const lines: string[] = ["\n\nPromoted to long-term memory:"];
+  for (const f of saved) lines.push(`  ✓ [${f.type}] ${f.name} — ${f.description}`);
+  for (const f of blocked) lines.push(`  ⊘ [${f.type}] ${f.name} (blocked by MemoryPromote hook${f.reason ? `: ${f.reason}` : ""})`);
+  for (const f of failed) lines.push(`  ✗ [${f.type}] ${f.name} (failed${f.reason ? `: ${f.reason}` : ""})`);
+  return lines.join("\n");
+}
 
 // ----- /model -----
 
