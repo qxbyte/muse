@@ -35,14 +35,17 @@ export const MemoryWriteTool = defineTool({
   permission: "write",
   summarize: (args) => `MemoryWrite(${args.name}, type=${args.type})`,
   async execute(args, ctx) {
+    // LLM 自主写入强制 trust=auto + source=manual-write — LLM 不能自封 verified/trusted
     const { filePath, indexUpdated } = await writeMemory(ctx.cwd, {
       name: args.name,
       description: args.description,
       type: args.type as MemoryType,
       body: args.body,
+      trust: "auto",
+      source: "manual-write",
     });
     return {
-      content: `Saved memory "${args.name}" (${args.type}) → ${filePath}${indexUpdated ? "\nMEMORY.md updated." : ""}`,
+      content: `Saved memory "${args.name}" (${args.type}, trust=auto) → ${filePath}${indexUpdated ? "\nMEMORY.md updated." : ""}`,
       summary: `MemoryWrite ${args.name}`,
     };
   },
