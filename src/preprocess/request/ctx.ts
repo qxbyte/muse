@@ -8,6 +8,7 @@ import type { Message, ToolDefinition } from "../../types/index.js";
 import type { PermissionMode } from "../../permission/index.js";
 import type { TodoStore } from "../../loop/todos.js";
 import type { ToolRegistry } from "../../tools/registry.js";
+import type { HierarchyLayer } from "../../loop/hierarchy.js";
 
 export interface RequestPreprocessSettings {
   trimHistory?: { enabled?: boolean; budgetRatio?: number };
@@ -19,6 +20,8 @@ export interface RequestServices {
   todos: TodoStore;
   /** 已加载的 MEMORY.md 索引(由 app/cli 在 turn 前刷新一次后注入)。 */
   memoryIndex: string;
+  /** 已加载的 hierarchy(MUSE.md / AGENTS.md 5 层)。II-1 引入。 */
+  hierarchy?: HierarchyLayer[];
   /** 工具注册中心,用于 toLLMDefinitions + tool 元数据。 */
   toolRegistry: ToolRegistry;
   /** 输出语言。 */

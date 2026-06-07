@@ -16,6 +16,7 @@ import { Session } from "./session/jsonl.js";
 import { Agent } from "./loop/agent.js";
 import { TodoStore } from "./loop/todos.js";
 import { loadMemoryIndex } from "./loop/memory.js";
+import { loadHierarchy } from "./loop/hierarchy.js";
 import { InputPipeline, createInputCtx, buildUserMessage } from "./preprocess/input/index.js";
 import { RequestPipeline } from "./preprocess/request/index.js";
 import { ResultPipeline } from "./preprocess/result/index.js";
@@ -221,6 +222,7 @@ async function runOneShot(opts: {
   initialMessages?: import("./types/index.js").Message[];
 }): Promise<void> {
   const memoryIndex = await loadMemoryIndex(opts.cwd);
+  const hierarchy = await loadHierarchy(opts.cwd);
   const sessionStartTime = Date.now();
 
   // SessionStart hook
@@ -294,6 +296,7 @@ async function runOneShot(opts: {
     requestServices: {
       todos,
       memoryIndex,
+      hierarchy,
       toolRegistry: opts.tools,
       lang: opts.lang,
       provider: opts.llm.providerName,

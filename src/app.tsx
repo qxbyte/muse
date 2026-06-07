@@ -37,6 +37,7 @@ import { PermissionGate, type PermissionMode, type PermissionDecision } from "./
 import { Session, type SessionSummary } from "./session/jsonl.js";
 import { Agent } from "./loop/agent.js";
 import { loadMemoryIndex } from "./loop/memory.js";
+import { loadHierarchy, type HierarchyLayer } from "./loop/hierarchy.js";
 import { TodoStore } from "./loop/todos.js";
 import { InputPipeline, createInputCtx, buildUserMessage, type InputCtx } from "./preprocess/input/index.js";
 import { RequestPipeline } from "./preprocess/request/index.js";
@@ -467,6 +468,18 @@ export function App({
     };
   }, [cwd]);
 
+  // II-1:hierarchy(MUSE.md / AGENTS.md 5 层)— turn 起前一次性加载,变更 cwd 时重读
+  const [hierarchy, setHierarchy] = useState<HierarchyLayer[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    loadHierarchy(cwd).then((layers) => {
+      if (!cancelled) setHierarchy(layers);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cwd]);
+
   // SessionStart / SessionEnd hooks
   const [sessionExtraPrompt, setSessionExtraPrompt] = useState<string>("");
   const turnCountRef = useRef<number>(0);
@@ -518,6 +531,7 @@ export function App({
       requestServices: {
         todos,
         memoryIndex,
+        hierarchy,
         toolRegistry: tools,
         lang,
         provider: llm.providerName,
@@ -604,7 +618,7 @@ export function App({
     });
     agent.setMessages(messagesRef.current);
     agentRef.current = agent;
-  }, [llm, tools, permissions, session, cwd, lang, memoryIndex, sessionExtraPrompt]);
+  }, [llm, tools, permissions, session, cwd, lang, memoryIndex, hierarchy, sessionExtraPrompt]);
 
   // 键盘：Ctrl+C 全局退出 + Shift+Tab 循环切 permission mode + autocomplete ↑↓ Tab Esc 导航
   useInput(
