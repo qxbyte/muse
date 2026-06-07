@@ -1,11 +1,17 @@
 /**
- * 处理中的状态行（流式 / 工具执行期间常驻底部）。
+ * 处理中的状态行(流式 / 工具执行期间常驻底部)。
  *
- * 两行设计：
- *   ●  Working… ✨闪烁    (12s · ↑ 1.2k tokens · thought for 4s)
- *      ↳ Read(src/foo.ts)            ← 仅 runningTool != null 时出现
+ * 单行设计:
+ *   ●  Thinking… ✨闪烁    (12s · ↑ 1.2k tokens · thought for 4s)
  *
- * 主线（Working）始终在跑，扫光动画提示 "活着"。工具行作为子线路按需呈现。
+ * 主标签按 phase 三态切换:
+ *   - thinking:  请求已发,还没收到 LLM 首字
+ *   - streaming: 已收到 text-delta,LLM 在出字
+ *   - working:   工具执行中(runningTool ≠ null)
+ *
+ * 不再显示 "↳ ToolName" 子行——active tool 由其所属 BatchedToolBlock / ToolCallBlock
+ * 承担,在历史区呈现具体参数;状态行只表达当前 phase + 计时 + token,不再分裂信息。
+ *
  * 不接收 status 字段——调用方根据 status !== "idle" 决定是否挂载本组件。
  */
 
@@ -22,11 +28,16 @@ export interface StatusLineProps {
   firstTextTime: number | null;
   /** 本轮已累计的 input tokens（usage 事件累加，>0 才显示）。 */
   inputTokens: number;
-  /** 工具运行中时的工具名，null 表示不在跑工具。 */
+  /** 工具运行中时的工具名,null 表示不在跑工具。仅用于推导 phase,不再渲染子行。 */
   runningTool: string | null;
   /** UI 语言：影响标签文案。 */
   lang: "en" | "zh-CN";
 }
+
+const PHASE_LABELS = {
+  en: { thinking: "Thinking", streaming: "Streaming", working: "Working" },
+  "zh-CN": { thinking: "思考中", streaming: "输出中", working: "工作中" },
+} as const;
 
 export function StatusLine({ startTime, firstTextTime, inputTokens, runningTool, lang }: StatusLineProps) {
   const [now, setNow] = useState(Date.now());
@@ -36,7 +47,10 @@ export function StatusLine({ startTime, firstTextTime, inputTokens, runningTool,
   }, []);
 
   const elapsedSec = Math.max(0, Math.floor((now - startTime) / 1000));
-  const mainLabel = lang === "zh-CN" ? "工作中" : "Working";
+  // phase 推导:工具执行优先级最高,其次"已开始流字"=streaming,最初是 thinking
+  const phase: "thinking" | "streaming" | "working" =
+    runningTool ? "working" : firstTextTime !== null ? "streaming" : "thinking";
+  const mainLabel = PHASE_LABELS[lang][phase];
 
   const parts: string[] = [formatDuration(elapsedSec)];
   if (inputTokens > 0) {
@@ -50,18 +64,10 @@ export function StatusLine({ startTime, firstTextTime, inputTokens, runningTool,
   }
 
   return (
-    <Box flexDirection="column" marginTop={1}>
-      <Box flexDirection="row">
-        <Text color="gray">● </Text>
-        <Shimmer text={mainLabel} />
-        <Text dimColor>{`  (${parts.join(" · ")})`}</Text>
-      </Box>
-      {runningTool && (
-        <Box flexDirection="row" marginLeft={2} marginTop={0}>
-          <Text dimColor>{"↳ "}</Text>
-          <Text color="cyan">{runningTool}</Text>
-        </Box>
-      )}
+    <Box flexDirection="row" marginTop={1}>
+      <Text color="gray">● </Text>
+      <Shimmer text={mainLabel} />
+      <Text dimColor>{`  (${parts.join(" · ")})`}</Text>
     </Box>
   );
 }

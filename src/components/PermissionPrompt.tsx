@@ -12,6 +12,7 @@
 import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { PermissionDecision } from "../permission/index.js";
+import { FOCUS_COLOR } from "../ui/theme.js";
 
 export interface PermissionRequest {
   toolName: string;
@@ -67,7 +68,7 @@ export function PermissionPrompt({ request }: { request: PermissionRequest }) {
           const focused = i === index;
           const label = labelFor(o.labelKey, request.toolName);
           return (
-            <Text key={o.decision} color={focused ? "cyan" : undefined} bold={focused}>
+            <Text key={o.decision} color={focused ? FOCUS_COLOR : undefined} bold={focused}>
               {focused ? "› " : "  "}
               {i + 1}. {label}{"  "}
               <Text dimColor>({o.shortcut})</Text>

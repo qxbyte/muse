@@ -4,7 +4,7 @@
  * 行渲染由 renderRow 回调提供；本组件只负责：
  * - 键盘事件
  * - 焦点状态 + 滑动窗口（保证 focused 始终可见）
- * - 紫色 `›` 焦点指针（颜色 #A855F7，对齐用户截图）
+ * - 紫色 `›` 焦点指针(色见 `src/ui/theme.ts::POINTER_COLOR`)
  * - 标题 + 提示
  *
  * 当前调用方：ModelSelector / SessionSelector。
@@ -13,8 +13,7 @@
 
 import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
-
-const POINTER_COLOR = "#A855F7";
+import { POINTER_COLOR } from "../ui/theme.js";
 
 export interface SelectorProps<T> {
   items: T[];
