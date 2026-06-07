@@ -1,5 +1,5 @@
 /**
- * 输入框下方的状态尾栏（对齐 Claude Code 风格）。
+ * 输入框下方的状态尾栏（对齐主流 TUI Agent 形态）。
  *
  * 信息（从左到右）：
  *   @<sid8>            当前 session 短 id（首 8 字符；resume 后亦同）
@@ -8,9 +8,9 @@
  *   <in>/<max>         绝对值，便于核对
  *   ↑<in> ↓<out>       本会话累计 token（自 app 启动后；/resume 不回灌）
  *
- * 配色（对齐 Claude Code 的 footer）：
- *   session id  → cyan bold        （如 Claude Code 的 "Sync code..." 标题色）
- *   model       → magenta          （如 Claude Code 的 "Opus 4.7 (1M context)" 粉品红）
+ * 配色：
+ *   session id  → cyan bold        （区分 session 标识色,与 model 对比）
+ *   model       → magenta          （粉品红,显眼但不抢主视觉）
  *   "ctx:"      → 默认白            （label 不 dim，醒目）
  *   填充进度条   → 主题色：<70% green / 70–89% yellow / ≥90% red（"快爆"警告）
  *   百分比 / in/max → dim gray      （次要信息）

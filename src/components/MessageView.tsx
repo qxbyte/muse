@@ -82,7 +82,7 @@ function userAttachmentsOf(content: string | ContentPart[]): UserAttachmentRow[]
 }
 
 /**
- * 行首圆点风格统一 ⏺，颜色按消息类型区分（对齐 Claude Code）：
+ * 行首圆点风格统一 ⏺，颜色按消息类型区分（对齐主流 TUI Agent 形态）：
  *   user        → cyan（输入指示符 "> " 保留，不混入圆点风格）
  *   assistant   → cyan          ⏺  普通对话
  *   tool_use    → FOCUS_COLOR   ⏺  工具调用(淡紫,与选择器焦点色统一)
@@ -94,7 +94,7 @@ function userAttachmentsOf(content: string | ContentPart[]): UserAttachmentRow[]
 export const DOT = "⏺";
 
 /**
- * 用户消息：和输入框同款灰底条带（对齐 Claude Code）。
+ * 用户消息：和输入框同款灰底条带（对齐主流 TUI Agent 形态）。
  * 多行内容每行都填满 bg，首行带 "› " 前缀，后续行用 3 空格缩进保持对齐。
  */
 const USER_BG = "#262626";
@@ -132,7 +132,7 @@ function UserMessage({ message }: { message: { content: string | ContentPart[] }
         return <Text key={i}>{fullLine}</Text>;
       })}
       <Text>{padRow}</Text>
-      {/* 附件子项:仿 Claude Code 用 `└ ` 树枝标识每个 file / image part */}
+      {/* 附件子项:用 `└ ` 树枝标识每个 file / image part */}
       {attachments.length > 0 && (
         <Box flexDirection="column" marginLeft={2}>
           {attachments.map((att, i) => (
@@ -186,11 +186,11 @@ function AssistantMessage({
       items.push({ kind: "text", text: part.text, key: `t-${i}` });
     } else if (part.type === "tool_use") {
       if (part.name === "TodoWrite") {
-        // TodoWrite 不再在历史区渲染,完全交给底部 sticky TodoList(对齐 Claude Code)。
+        // TodoWrite 不再在历史区渲染,完全交给底部 sticky TodoList。
         // latestTodoWritePartId 字段保留兼容签名,本路径不再消费。
         return;
       } else if (part.name === "AskUserQuestion") {
-        // AskUserQuestion 单独走特殊渲染(对齐 Claude Code 的 "User answered Claude's questions" 样式),
+        // AskUserQuestion 单独走特殊渲染("User answered" 样式),
         // 不进 batch
         flush(i);
         items.push({ kind: "askUserQuestion", result: resultsByCallId?.get(part.id), key: `q-${i}` });
@@ -231,7 +231,7 @@ function AssistantMessage({
 }
 
 function AssistantTextPart({ text }: { text: string }) {
-  // 不再 collapse-long 折叠:muse 没有 TUI 展开键(Claude Code 有 Ctrl+R,muse 没接),
+  // 不再 collapse-long 折叠:muse 没有 TUI 展开键(可选用展开热键的 v0.3 再做),
   // 折叠 = 丢内容。终端 scrollback 足够展示长输出。
   // collapseLong helper 留着供 ResultPipeline 折叠工具结果(那里有 summary 可恢复),
   // 但 assistant 文本直接渲染全文。
@@ -283,10 +283,10 @@ function fallbackTitleFromTodos(todos: TodoItem[]): string {
   return first.length > 40 ? first.slice(0, 40) + "…" : first;
 }
 
-// 仿 Claude Code 的 todos:
+// Todos 渲染:
 // - in_progress 时顶层升级为 active 状态行(Shimmer 扫光 activeForm + 计时)
 // - 否则顶层用 LLM 起的 listTitle(A 方案);LLM 没给 → 首条 content 截断兜底(B 方案)
-// - 完成态用绿色 ✓(不再 strikethrough,对齐 Claude Code 风格)
+// - 完成态用绿色 ✓(不再 strikethrough,对齐业界 TUI Agent 形态)
 export function TodoList({ todos, listTitle }: { todos: TodoItem[]; listTitle?: string }) {
   const inProgress = todos.find((t) => t.status === "in_progress");
   // 用 content 作为身份键(activeForm 可能省略,content 是稳定的)
@@ -344,25 +344,26 @@ function TodoRow({ todo }: { todo: TodoItem }) {
   const label = todo.status === "in_progress" && todo.activeForm ? todo.activeForm : todo.content;
   switch (todo.status) {
     case "completed":
-      // 完成态:绿色 ✓ + 普通文字(无 strikethrough,对齐 Claude Code)
+      // 完成态:绿勾 + 灰字 + 删除线
       return (
         <Box flexDirection="row" marginLeft={2}>
           <Text color="green">{"✓ "}</Text>
-          <Text>{label}</Text>
+          <Text dimColor strikethrough>{label}</Text>
         </Box>
       );
     case "in_progress":
-      // 进行中:实心方框 ■ + 橙色 ACTIVE_TODO_COLOR bold,对齐 Claude Code todos 风格
+      // 进行中:橙色实心方块 ■ + 白字加粗(方块橙、文字白)
       return (
         <Box flexDirection="row" marginLeft={2}>
-          <Text color={ACTIVE_TODO_COLOR} bold>{"■ "}</Text>
-          <Text color={ACTIVE_TODO_COLOR} bold>{label}</Text>
+          <Text color={ACTIVE_TODO_COLOR}>{"■ "}</Text>
+          <Text bold>{label}</Text>
         </Box>
       );
     default:
+      // 未完成:灰色空心方框 □ + 灰字
       return (
         <Box flexDirection="row" marginLeft={2}>
-          <Text dimColor>{"☐ "}</Text>
+          <Text dimColor>{"□ "}</Text>
           <Text dimColor>{label}</Text>
         </Box>
       );
@@ -370,7 +371,7 @@ function TodoRow({ todo }: { todo: TodoItem }) {
 }
 
 /**
- * AskUserQuestion 工具结果的特殊渲染(对齐 Claude Code 的 "User answered" 样式):
+ * AskUserQuestion 工具结果的特殊渲染("User answered" 样式):
  *   ● User answered:
  *     └ · <Question>  → <Answer>
  *         Notes: <user notes>
@@ -451,11 +452,11 @@ function AskUserQuestionResult({ result }: { result?: ToolMessage }) {
 }
 
 /**
- * 单个工具的"调用 + 结果"块（仿 Claude Code 的 ●Tool(...) + └ result 树形展示）。
+ * 单个工具的"调用 + 结果"块（●Tool(...) + └ result 树形展示）。
  * 结果 region 缩进 2 空格，首行用 └ 树枝角标，颜色按状态。
  *
  * Edit/Write 且 result 含 diff 时,header 之下额外加一行 `└ Added N lines, removed M lines`
- * (从 unified diff 字符串数 +/- 行得出),对齐 Claude Code 风格。
+ * (从 unified diff 字符串数 +/- 行得出)。
  */
 function ToolCallBlock({
   name,
@@ -589,7 +590,7 @@ function stripWrapperTags(content: string): string {
 }
 
 /**
- * Diff 渲染:对齐 Claude Code 风格 — 绝对行号 + 整行 bg 高亮(延伸到 EOL)。
+ * Diff 渲染:绝对行号 + 整行 bg 高亮(延伸到 EOL)。
  *
  * 数据流:工具(edit/write)生成的 unified diff 字符串 → jsdiff::parsePatch
  *   → hunks 数组(每个 hunk 有 oldStart/newStart + lines[`+/-/space` 前缀])
@@ -859,7 +860,7 @@ function formatArgs(args: unknown): string {
 }
 
 /**
- * 可 batch 聚合的工具白名单 — 仿 Claude Code:探索/查询类工具进 batch。
+ * 可 batch 聚合的工具白名单:探索/查询类工具进 batch。
  *
  * 完成态不再"完全隐藏子项",改为常驻显示前 MAX_DONE_ROWS 行 + `(+N more)` 折叠,
  * 让用户能扫一眼跑过什么命令;长 stdout 详情可走 scrollback 回看。
@@ -878,7 +879,7 @@ export const BATCHABLE_TOOLS: ReadonlySet<string> = new Set([
 
 // ============== Batched tool rendering ==============
 // muse 的 agent ReAct 是串行 tool loop:每跑 1 个工具就单独成一条 assistant message。
-// 散开显示在多次连续 tool 调用时观感差(垂直占用大、节奏被切碎),改用 Claude Code 风格的
+// 散开显示在多次连续 tool 调用时观感差(垂直占用大、节奏被切碎),改用业界常见的
 // "batch 聚合"——把连续的只含 tool_use 的 assistant message 合并为一个虚拟块,
 // header 用复数形式,子项一行一条。
 
@@ -942,12 +943,12 @@ function actionPhrase(toolName: string, n: number): string {
 }
 
 /** active row 切换最小停留时间(ms):让快命令(本地 ls/cat 几十 ms)的 active row 也能被看见。
- *  Claude Code 同样手法 — 渲染层加 sticky delay,实际 tool 执行速度不变。 */
+ *  渲染层加 sticky delay,实际 tool 执行速度不变(业界常见手法)。 */
 const ACTIVE_ROW_STICKY_MS = 500;
 
 /** 全展开子项时最多渲染几行,余下用 `(+N more)` 折叠,避免 50+ 项的 batch 把屏幕占满。 */
 const MAX_EXPANDED_ROWS = 5;
-/** 完成态(allDone)默认显示前 N 行 + (+M more) 折叠 — 不再完全隐藏,对齐 Claude Code:
+/** 完成态(allDone)默认显示前 N 行 + (+M more) 折叠 — 不再完全隐藏:
  *  既视觉紧凑,又能扫一眼看到 agent 跑过什么(尤其 Bash/WebFetch 这种命令)。 */
 const MAX_DONE_ROWS = 3;
 
@@ -960,8 +961,8 @@ export function BatchedToolBlock({
    *  未提供时回退到 firstPending(下一个没 result 的)。 */
   lastStartedToolId?: string | null;
 }) {
-  // Claude Code 风格 transient 渲染:
-  // - 全部完成 → 显示前 MAX_DONE_ROWS 行 + `(+N more)` 折叠提示(对齐 Claude Code:
+  // Transient 渲染:
+  // - 全部完成 → 显示前 MAX_DONE_ROWS 行 + `(+N more)` 折叠提示(
   //   既视觉紧凑,又能扫一眼看到 agent 跑过什么命令/读了什么文件)
   // - 执行中 → 用灰色 `└` 显示 active row;**hold 上一个直到下一个真的开始**:
   //   target 优先匹配 lastStartedToolId(最近一次 onToolCallStart 的 id),避免
@@ -1015,7 +1016,7 @@ export function BatchedToolBlock({
           <BatchedToolRow use={uses[activeIdx]} />
         </Box>
       ) : (
-        // 完成态:显示前 MAX_DONE_ROWS 行 + `(+N more)` 折叠(对齐 Claude Code)
+        // 完成态:显示前 MAX_DONE_ROWS 行 + `(+N more)` 折叠
         <Box flexDirection="column" marginLeft={2}>
           {uses.slice(0, MAX_DONE_ROWS).map((u, i) => (
             <BatchedToolRow key={i} use={u} />
@@ -1033,7 +1034,7 @@ export function BatchedToolBlock({
 }
 
 function BatchedToolRow({ use }: { use: BatchedToolUse }) {
-  // 按工具类型展示参数核心,不再用 Tool(args=...) 代码风格,对齐 Claude Code:
+  // 按工具类型展示参数核心,不再用 Tool(args=...) 代码风格:
   //   Read/Edit/Write    → 文件路径
   //   Bash               → $ <command>
   //   Grep/Glob          → pattern

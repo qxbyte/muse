@@ -3,7 +3,7 @@
  *
  * Why：Ink 的 Box 不支持 backgroundColor 属性（只有 Text 支持），
  * 而 ink-text-input 输出的 Text 不暴露 bg 注入口。要实现"整行高亮背景"
- * 的输入条（对齐 Claude Code 风格），最干净的方式是自己渲染。
+ * 的输入条（对齐主流 TUI Agent 形态），最干净的方式是自己渲染。
  *
  * 实现：单个 Text 节点，padEnd 到 width 让 bg 填满整行。
  * 光标用 inverse 字符表示，超出 width 时做左侧 viewport 裁切常驻光标可见。
@@ -40,7 +40,7 @@ export interface BgTextInputProps {
    * paste 事件触发时,先**同步检测系统剪贴板是否含图片**;含图则跳过文本 paste
    * 路径,改调本回调:调用方一般把图保存到 image registry,返回 `[Image #N]` 占位符。
    *
-   * 这是仿 Claude Code 的 Cmd+V 真粘图体验:用户复制图后按 Cmd+V,输入框直接出现
+   * 这是对齐业界 TUI Agent 的 Cmd+V 真粘图体验:用户复制图后按 Cmd+V,输入框直接出现
    * `[Image #N]`,无需 `/image` slash 命令。
    *
    * 仅 macOS / Linux 实装;Windows 返 null。

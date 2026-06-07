@@ -99,10 +99,10 @@ interface UIState {
   stableUntilIdx: number;
   /** 本轮 sticky TodoList 的"起点":只显示 history[todosSinceTurnIdx..] 之间最新一次 TodoWrite 的 todos。
    *  每次 user_submit 时重置到当前 history 长度——旧 turn 的 TodoList 立即从底部消失。
-   *  这样实现 "TodoList 固定在输入框上方,跨工具调用持续可见" 的 Claude Code 体验。 */
+   *  这样实现 "TodoList 固定在输入框上方,跨工具调用持续可见" 的体验。 */
   todosSinceTurnIdx: number;
   /** turn 结束标记:每次 onTurnEnd 记录"该 turn 结束时 history 长度 + 时长",
-   *  渲染时在对应位置插入 `✶ Churned for Xm Ys` 灰色行(对齐 Claude Code 每 turn 末尾摘要)。
+   *  渲染时在对应位置插入 `✶ Churned for Xm Ys` 灰色行(turn 末尾摘要)。
    *  不进 session JSONL,resume 时旧 turn 的 churned 标记会丢,新 turn 仍会记录。 */
   turnEnds: Array<{ atHistoryLen: number; durationMs: number }>;
 }
@@ -1014,7 +1014,7 @@ export function App({
 
   /**
    * 双 Esc rewind:找最后一条 user message,把它的文本塞回输入框,删除它和它之后的所有消息。
-   * 这是 Claude Code "Double Esc time-machine" 的简化版(muse 没做 file checkpoint)。
+   * 这是 "Double Esc time-machine" 形态的简化版(muse 没做 file checkpoint)。
    * 返 true 表示成功 rewind,false 表示没东西可 rewind。
    */
   function rewindLastTurn(): boolean {
@@ -1149,7 +1149,7 @@ export function App({
       const msg = state.history[i];
       if (msg.role === "tool" && msg.toolUseId && inlinedIds.has(msg.toolUseId)) continue;
       // 跳过所有 TodoWrite-only assistant message:TodoWrite 现在全部交给底部 sticky TodoList
-      // 渲染,历史区不再显示(对齐 Claude Code 的固定底部体验)
+      // 渲染,历史区不再显示(固定底部体验)
       if (msg.role === "assistant" && Array.isArray(msg.content)) {
         const isTodoWriteOnly =
           msg.content.length > 0 &&
@@ -1284,7 +1284,7 @@ export function App({
               {/* 流式 markdown 渲染:已闭合 block(段/代码块/list)实时渲染成 ANSI
                   样式;未闭合段保留纯文本。Block 级缓存(React.memo + useMemo)
                   让闭合后的旧 block 不重 parse、不重 render — Ink 看到同样的 Text
-                  child 也会减少 erase,显著降低长输出的闪屏。Claude Code 同样思路。 */}
+                  child 也会减少 erase,显著降低长输出的闪屏(业界同样思路)。 */}
               <StreamingMarkdown text={state.streamingText} />
             </Box>
           </Box>
@@ -1508,7 +1508,7 @@ function isAbortLike(err: unknown): boolean {
   return false;
 }
 
-/** 单个 turn 结尾的灰色摘要行,对齐 Claude Code 的 `✶ Churned for Xm Ys` 风格。 */
+/** 单个 turn 结尾的灰色摘要行,`✶ Churned for Xm Ys` 风格。 */
 function ChurnedLine({ durationMs }: { durationMs: number }) {
   return (
     <Box marginTop={1}>

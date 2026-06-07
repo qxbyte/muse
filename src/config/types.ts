@@ -135,7 +135,7 @@ export const SettingsSchema = z.object({
   hooks: HooksConfigSchema.optional(),
   preprocess: PreprocessSettingsSchema.optional(),
   /**
-   * 启动时注入到 process.env 的额外环境变量,仿 Claude Code 的 settings.env。
+   * 启动时注入到 process.env 的额外环境变量(对齐业界 CLI Agent 的 settings.env 模式)。
    * 值必须是字符串(JSON 无 number→env 的隐式转换;约束传 "1" / "0" 这种字面值)。
    *
    * 当前支持的 muse 自识别变量:

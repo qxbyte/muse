@@ -1,7 +1,7 @@
 /**
  * MemoryWrite / MemoryRead 工具：长期 memory 操作。
  *
- * Memory 设计与 Claude Code 对齐：四种类型（user / feedback / project / reference），
+ * Memory 设计:四种类型（user / feedback / project / reference,对齐业界主流 Coding Agent 形态），
  * 文件路径在 ~/.muse/projects/<hash>/memory/，MEMORY.md 索引注入到 system prompt。
  *
  * 由 ctx.cwd 决定项目身份；切目录后 memory 自动隔离。
