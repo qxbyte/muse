@@ -16,6 +16,14 @@ import { Session } from "../session/jsonl.js";
 import { loadModelsRegistry, type LoadError } from "../config/models.js";
 import { shortPath, formatList, parseArgs, formatTime } from "./_format.js";
 import { MODE_CYCLE, MODE_LABEL, type PermissionMode } from "../permission/index.js";
+import {
+  listMemories,
+  readMemory,
+  deleteMemory,
+  setMemoryTrust,
+  TRUST_LEVELS,
+  type TrustLevel,
+} from "../loop/memory.js";
 
 // ----- /help -----
 
@@ -462,6 +470,121 @@ const BTW: SlashCommand = {
   },
 };
 
+// ----- /memory -----
+
+const MEMORY_HELP = [
+  `Usage:`,
+  `  /memory                       list all memories (default)`,
+  `  /memory list                  same as above`,
+  `  /memory view <name>           show full content + frontmatter`,
+  `  /memory delete <name>         remove permanently`,
+  `  /memory promote <name>        auto → verified`,
+  `  /memory trust <name> <level>  set trust (verified | auto;`,
+  `                                 trusted is reserved for MUSE.md / AGENTS.md)`,
+].join("\n");
+
+const MEMORY: SlashCommand = {
+  name: "memory",
+  description: "manage long-term memory (list / view / delete / promote / trust)",
+  argsHint: "[list | view <name> | delete <name> | promote <name> | trust <name> <level>]",
+  async execute(ctx) {
+    const args = ctx.args.trim();
+    const parts = args.length ? args.split(/\s+/) : [];
+    const sub = parts[0] ?? "list";
+    try {
+      switch (sub) {
+        case "list":
+          return await memoryList(ctx.cwd);
+        case "view":
+          if (!parts[1]) return { display: `Usage: /memory view <name>` };
+          return await memoryView(ctx.cwd, parts[1]);
+        case "delete":
+        case "rm":
+          if (!parts[1]) return { display: `Usage: /memory delete <name>` };
+          return await memoryDelete(ctx.cwd, parts[1]);
+        case "promote":
+          if (!parts[1]) return { display: `Usage: /memory promote <name>` };
+          return await memoryPromote(ctx.cwd, parts[1]);
+        case "trust":
+          if (!parts[1] || !parts[2]) return { display: `Usage: /memory trust <name> <verified|auto>` };
+          return await memoryAssignTrust(ctx.cwd, parts[1], parts[2]);
+        case "help":
+          return { display: MEMORY_HELP };
+        default:
+          return { display: `Unknown subcommand: ${sub}\n\n${MEMORY_HELP}` };
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { display: `Memory operation failed: ${msg}` };
+    }
+  },
+};
+
+async function memoryList(cwd: string) {
+  const list = await listMemories(cwd);
+  if (list.length === 0) {
+    return { display: "(no memories saved for this project)\n\n" + MEMORY_HELP };
+  }
+  const lines = list.map((m) => {
+    const trustTag = `[${m.frontmatter.trust}]`.padEnd(11);
+    const typeTag = `(${m.frontmatter.type})`.padEnd(12);
+    return `  ${trustTag} ${typeTag} ${m.frontmatter.name}  — ${m.frontmatter.description}`;
+  });
+  return {
+    display: `Memories for this project (${list.length}):\n\n${lines.join("\n")}\n\n${MEMORY_HELP}`,
+  };
+}
+
+async function memoryView(cwd: string, name: string) {
+  const file = await readMemory(cwd, name);
+  const fm = file.frontmatter;
+  return {
+    display:
+      `${name}\n` +
+      `  trust:       ${fm.trust}\n` +
+      `  type:        ${fm.type}\n` +
+      `  source:      ${fm.source}\n` +
+      `  created:     ${fm.created_at}\n` +
+      `  updated:     ${fm.updated_at}\n` +
+      `  description: ${fm.description}\n\n` +
+      `--- Body ---\n\n${file.body}`,
+  };
+}
+
+async function memoryDelete(cwd: string, name: string) {
+  // 先验证存在性,避免静默无效操作
+  await readMemory(cwd, name);
+  await deleteMemory(cwd, name);
+  return { display: `Deleted memory "${name}".` };
+}
+
+async function memoryPromote(cwd: string, name: string) {
+  const before = await readMemory(cwd, name);
+  if (before.frontmatter.trust === "trusted") {
+    return { display: `"${name}" is already trusted (hierarchy-sourced).` };
+  }
+  if (before.frontmatter.trust === "verified") {
+    return { display: `"${name}" is already verified. Trusted is reserved for MUSE.md / AGENTS.md.` };
+  }
+  await setMemoryTrust(cwd, name, "verified", "user-edit");
+  return { display: `Promoted "${name}": auto → verified.` };
+}
+
+async function memoryAssignTrust(cwd: string, name: string, levelArg: string) {
+  if (!(TRUST_LEVELS as readonly string[]).includes(levelArg)) {
+    return { display: `Invalid trust level: ${levelArg}. Use one of: ${TRUST_LEVELS.join(" / ")}.` };
+  }
+  if (levelArg === "trusted") {
+    return {
+      display:
+        `Cannot set trust=trusted via /memory; trusted is reserved for hierarchy files ` +
+        `(MUSE.md / AGENTS.md). To make this content trusted, move it into one of those files.`,
+    };
+  }
+  await setMemoryTrust(cwd, name, levelArg as TrustLevel, "user-edit");
+  return { display: `Set "${name}" trust → ${levelArg}.` };
+}
+
 // ----- registry -----
 
 export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
@@ -471,6 +594,7 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   MODELS,
   CONFIG,
   MCP,
+  MEMORY,
   MODE_CMD,
   COST,
   BTW,
