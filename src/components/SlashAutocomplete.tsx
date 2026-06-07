@@ -5,7 +5,7 @@
  * 进入参数阶段（空格之后）→ overlay 关闭，让用户安静地输入参数
  *
  * 显示：默认色 / + name + dim description
- *       focused 行整条命令名变紫色 + bold（不用 inverse 背景条）
+ *       focused 行整条命令名变浅青 + bold（不用 inverse 背景条）
  *       超过 maxVisible 行折叠尾部
  *
  * 渲染由 App 控制，本组件是纯展示。
@@ -14,6 +14,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { SlashCommand } from "../slash/index.js";
+import { FOCUS_COLOR } from "../ui/theme.js";
 
 export interface SlashAutocompleteProps {
   matches: SlashCommand[];
@@ -22,7 +23,6 @@ export interface SlashAutocompleteProps {
 }
 
 const DEFAULT_MAX = 10;
-const SLASH_COLOR = "#A855F7";
 
 export function SlashAutocomplete({ matches, index, maxVisible = DEFAULT_MAX }: SlashAutocompleteProps) {
   if (matches.length === 0) return null;
@@ -60,10 +60,10 @@ export function SlashAutocomplete({ matches, index, maxVisible = DEFAULT_MAX }: 
 
 function Row({ cmd, focused, nameWidth }: { cmd: SlashCommand; focused: boolean; nameWidth: number }) {
   const padded = cmd.name.padEnd(nameWidth);
-  // focused 整条命令名变紫色 + bold；非 focused 用默认色
+  // focused 整条命令名变浅青 + bold；非 focused 用默认色
   return (
     <Box flexDirection="row">
-      <Text color={focused ? SLASH_COLOR : undefined} bold={focused}>
+      <Text color={focused ? FOCUS_COLOR : undefined} bold={focused}>
         {"/"}{padded}
       </Text>
       <Text>{"   "}</Text>

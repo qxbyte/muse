@@ -1,5 +1,5 @@
 /**
- * 内置 slash 命令：/help /clear /compact /model /config /mcp /cost /resume /quit
+ * 内置 slash 命令：/help /clear /compact /model /config /mcp /cost /resume /exit
  *
  * 设计文档：muse-design.md §7.2 表中 9 条全部覆盖。
  *
@@ -13,7 +13,7 @@ import { redactApiKey } from "../log/index.js";
 import { compactMessages } from "../loop/context.js";
 import { getMCPStatus } from "../mcp/index.js";
 import { Session } from "../session/jsonl.js";
-import { loadModelsRegistry, visibleEntries, type LoadError } from "../config/models.js";
+import { loadModelsRegistry, type LoadError } from "../config/models.js";
 import { shortPath, formatList, parseArgs, formatTime } from "./_format.js";
 import { MODE_CYCLE, MODE_LABEL, type PermissionMode } from "../permission/index.js";
 
@@ -53,11 +53,10 @@ const CLEAR: SlashCommand = {
   },
 };
 
-// ----- /quit -----
+// ----- /exit -----
 
-const QUIT: SlashCommand = {
-  name: "quit",
-  aliases: ["exit"],
+const EXIT: SlashCommand = {
+  name: "exit",
   description: "exit Muse",
   execute() {
     return { exit: true };
@@ -131,6 +130,7 @@ const COMPACT: SlashCommand = {
       const result = await compactMessages(ctx.history, {
         llm: ctx.llm,
         keepRecent,
+        hooks: ctx.settings.hooks,
         onProgress: (chars) => {
           progressRef.chars = chars;
         },
@@ -173,12 +173,12 @@ const MODELS: SlashCommand = {
       return { display: renderEmptyRegistryHint() };
     }
 
-    const visible = visibleEntries(registry);
+    const visible = registry.models;
     if (visible.length === 0) {
       return {
         display:
-          `models.local.json has no available models.\n` +
-          `Check that "availableModels" lists at least one id present in "models".`,
+          `models.local.json has no models.\n` +
+          `Add at least one entry to the "models" array.`,
       };
     }
 
@@ -221,8 +221,7 @@ function renderEmptyRegistryHint(): string {
     `      "apiKey": "\${YOUR_API_KEY}",`,
     `      "supportsToolCall": true`,
     `    }`,
-    `  ],`,
-    `  "availableModels": ["<your-model-id>"]`,
+    `  ]`,
     `}`,
     ``,
     `Then run /model again (no restart needed).`,
@@ -455,5 +454,5 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   COST,
   BTW,
   RESUME,
-  QUIT,
+  EXIT,
 ];

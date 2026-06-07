@@ -43,8 +43,8 @@
 import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { AskQuestion, AskQuestionResponse } from "../tools/builtin/ask-user-question.js";
+import { POINTER_COLOR } from "../ui/theme.js";
 
-const POINTER_COLOR = "#A855F7"; // 焦点行指针 + 焦点项 label
 const FOCUS_BG = "#5B5598"; // 聚焦 chip 背景（柔和淡紫）
 const FOCUS_FG = "white";
 const SUBMIT_COLOR = "green";

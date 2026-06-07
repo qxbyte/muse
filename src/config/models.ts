@@ -4,8 +4,8 @@
  * 位置：~/.muse/models.local.json （单文件，本机本地；从不入 git）
  *
  * 设计：
- * - models 数组的 id 是**用户起的名字**，不在代码里硬编码；availableModels 决定 /model
- *   selector 里显示哪些
+ * - models 数组的 id 是**用户起的名字**,不在代码里硬编码;数组里所有 entry 都自动进
+ *   /model selector,无需额外过滤字段
  * - apiKey 字段可以直接写明文（推荐：文件就在本机本地），也支持 ${ENV_VAR} 占位符
  * - baseUrl 是基址，SDK 自己拼 /chat/completions；用户填全 endpoint 时自动剥后缀
  * - 不存在文件 → 返回 undefined（调用方回退到 settings.json llm 配置）
@@ -69,8 +69,6 @@ export type ModelEntryInput = z.infer<typeof ModelEntryInputSchema>;
 export const ModelsRegistryInputSchema = z
   .object({
     models: z.array(ModelEntryInputSchema),
-    /** 不填 = 全部 models 都进 selector；填了就是 selector 子集（按顺序）。 */
-    availableModels: z.array(z.string()).optional(),
   })
   .passthrough();
 
@@ -79,7 +77,6 @@ export type ModelsRegistryInput = z.infer<typeof ModelsRegistryInputSchema>;
 /** Normalize 后的 registry：models[*].baseUrl 保证非空。 */
 export interface ModelsRegistry {
   models: ModelEntry[];
-  availableModels?: string[];
   [k: string]: unknown;
 }
 
@@ -174,15 +171,3 @@ export function findEntry(registry: ModelsRegistry, modelId: string): ModelEntry
   return registry.models.find((m) => m.id === modelId);
 }
 
-/** /model selector 里实际显示的条目（availableModels 缺省 = 全部 id）。 */
-export function visibleEntries(registry: ModelsRegistry): ModelEntry[] {
-  if (!registry.availableModels || registry.availableModels.length === 0) {
-    return registry.models;
-  }
-  const result: ModelEntry[] = [];
-  for (const id of registry.availableModels) {
-    const e = registry.models.find((m) => m.id === id);
-    if (e) result.push(e);
-  }
-  return result;
-}

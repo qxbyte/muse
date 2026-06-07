@@ -125,7 +125,6 @@ export function FooterStatus({
           <Text>{"ctx: "}</Text>
           {renderBar(BAR_TOTAL_WIDE)}
           <Text dimColor>{` ${pct}%`}</Text>
-          <Text dimColor>{`  ${formatTokens(lastInputTokens)}/${formatTokens(contextWindow)}`}</Text>
         </>
       )}
       {SEP}

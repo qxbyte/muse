@@ -16,6 +16,7 @@
 
 import React, { useState, useEffect } from "react";
 import { Text, useInput } from "ink";
+import { grabClipboardImageBufferSync } from "../clipboard/image.js";
 
 export interface BgTextInputProps {
   value: string;
@@ -36,6 +37,16 @@ export interface BgTextInputProps {
    */
   onPaste?: (chunk: string) => string;
   /**
+   * paste 事件触发时,先**同步检测系统剪贴板是否含图片**;含图则跳过文本 paste
+   * 路径,改调本回调:调用方一般把图保存到 image registry,返回 `[Image #N]` 占位符。
+   *
+   * 这是仿 Claude Code 的 Cmd+V 真粘图体验:用户复制图后按 Cmd+V,输入框直接出现
+   * `[Image #N]`,无需 `/image` slash 命令。
+   *
+   * 仅 macOS / Linux 实装;Windows 返 null。
+   */
+  onPasteImage?: (data: Buffer, mediaType: "image/png") => string;
+  /**
    * value 为空时显示的暗淡占位文本——典型场景：弹模态时 isActive=false，
    * 输入框仍可见但失焦，用 placeholder 透出 "Chat about this" 之类的提示。
    */
@@ -44,6 +55,10 @@ export interface BgTextInputProps {
 
 const BLINK_MS = 530; // 标准终端 cursor 闪烁周期
 const PASTE_CHAR_THRESHOLD = 200;
+
+// 光标前如果以下述占位符之一结尾,backspace/delete 一次性删整段。
+// 这两个占位符在 muse 里语义是"原子附件单元",字符级删除会留下 [Imag、[Pasted text #1 +3 这种半残的难看尾巴。
+const PLACEHOLDER_TAIL_RE = /\[Image #\d+\]$|\[Pasted text #\d+ \+\d+ lines\]$/;
 
 function looksLikePaste(input: string): boolean {
   // \r 也算：macOS Terminal / iTerm 粘贴多段文本时换行常为 \r 而非 \n，
@@ -62,6 +77,25 @@ function normalizeLineEndings(s: string): string {
   return s.replace(/\r\n?/g, "\n");
 }
 
+// 拖文件到终端时:
+//   - macOS Terminal.app 默认发 `/abs/path.png`(空格转义)
+//   - iTerm2 默认 `'/abs/path.png'`(单引号)或开启 file://;
+//   - 部分 linux 终端发 `file:///abs/path.png`
+// 输入若是上述独立单个 image path,自动 prepend `@` 并加空格,让 InputPipeline
+// 的 at-image stage 识别。仅识别 image 扩展名 — 非图片由用户显式 `@` 引用。
+const IMAGE_EXT_RE = /\.(?:png|jpg|jpeg|gif|webp)$/i;
+export function maybeWrapImagePath(s: string): string {
+  const t = s.trim().replace(/^['"]|['"]$/g, "");
+  // 必须单一 token(无中间空白),且看起来像绝对路径或 file:// URL,且扩展名图片
+  if (/\s/.test(t)) return s;
+  let path: string | null = null;
+  const fileUrl = t.match(/^file:\/\/(\/.+)$/i);
+  if (fileUrl) path = decodeURI(fileUrl[1]);
+  else if (t.startsWith("/")) path = t;
+  if (!path || !IMAGE_EXT_RE.test(path)) return s;
+  return `@${path} `;
+}
+
 export function BgTextInput({
   value,
   onChange,
@@ -71,6 +105,7 @@ export function BgTextInput({
   color,
   isActive = true,
   onPaste,
+  onPasteImage,
   placeholder,
 }: BgTextInputProps) {
   const [cursor, setCursor] = useState(value.length);
@@ -82,10 +117,12 @@ export function BgTextInput({
   }, [value]);
 
   // 光标闪烁：cursor / value 变化时重启 timer 让光标"常亮"过编辑动作；
-  // isActive=false（模态弹起）时不闪也不显
+  // isActive=false（模态弹起）时不闪也不显。
+  // settings.env.MUSE_DISABLE_CURSOR_BLINK=1 → 不启动 interval,光标常亮。
   useEffect(() => {
     if (!isActive) return;
     setBlinkOn(true);
+    if (process.env.MUSE_DISABLE_CURSOR_BLINK === "1") return; // 常亮
     const id = setInterval(() => setBlinkOn((b) => !b), BLINK_MS);
     return () => clearInterval(id);
   }, [isActive, cursor, value]);
@@ -98,9 +135,13 @@ export function BgTextInput({
       }
       if (key.backspace || key.delete) {
         if (cursor === 0) return;
-        const next = value.slice(0, cursor - 1) + value.slice(cursor);
+        // 占位符整体删除:[Image #N] / [Pasted text #N +M lines] 视作一个不可拆原子单元
+        const before = value.slice(0, cursor);
+        const tail = before.match(PLACEHOLDER_TAIL_RE);
+        const len = tail ? tail[0].length : 1;
+        const next = value.slice(0, cursor - len) + value.slice(cursor);
         onChange(next);
-        setCursor((c) => Math.max(0, c - 1));
+        setCursor((c) => Math.max(0, c - len));
         return;
       }
       if (key.leftArrow) {
@@ -119,17 +160,35 @@ export function BgTextInput({
         setCursor(value.length);
         return;
       }
+      // Ctrl+V:从剪贴板读图片插入 [Image #N] 占位符。
+      // 兼容 Ink 几种可能的 dispatch 形态(实测有差异):
+      //   - key.ctrl=true + input="v"
+      //   - 裸 SYN 字符 \x16 直接进 input(部分 ink 版本/raw mode)
+      const isCtrlV =
+        (key.ctrl && input === "v") || input === "\x16" || input.startsWith("\x16");
+      if (isCtrlV && onPasteImage) {
+        const img = grabClipboardImageBufferSync();
+        if (img) {
+          const placeholder = onPasteImage(img.data, img.mediaType);
+          const next = value.slice(0, cursor) + placeholder + value.slice(cursor);
+          onChange(next);
+          setCursor((c) => c + placeholder.length);
+        }
+        return;
+      }
       // 不消费 Ctrl+C / Shift+Tab / ↑↓ / Tab / Esc / meta——交给 App 顶层 useInput
       if (key.ctrl || key.shift || key.tab || key.escape || key.upArrow || key.downArrow || key.meta) {
         return;
       }
-      // 普通字符（含粘贴）：在光标处插入
+      // 普通字符(含粘贴):在光标处插入
       if (input && !key.return) {
-        // 先剥 bracketed paste 转义，再统一换行符——\r 不处理会让后续渲染 / LLM 都吃坏
-        const cleaned = normalizeLineEndings(stripBracketedPaste(input));
+        // 先剥 bracketed paste 转义,再统一换行符——\r 不处理会让后续渲染 / LLM 都吃坏
+        let cleaned = normalizeLineEndings(stripBracketedPaste(input));
         if (!cleaned) return;
-        // 检测疑似粘贴：交给调用方决定要不要替换成占位符
-        // 避免 \n 直接进 value 让 Text 渲染成多行，把输入框撑到看不见前文
+        // 拖图片到终端 → 自动 prepend @ 让 at-image stage 识别
+        cleaned = maybeWrapImagePath(cleaned);
+        // 检测疑似粘贴:交给调用方决定要不要替换成占位符
+        // 避免 \n 直接进 value 让 Text 渲染成多行,把输入框撑到看不见前文
         const insertion =
           onPaste && looksLikePaste(cleaned) ? onPaste(cleaned) : cleaned;
         const next = value.slice(0, cursor) + insertion + value.slice(cursor);

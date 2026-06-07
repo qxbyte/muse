@@ -33,6 +33,95 @@ export const UISchema = z.object({
   showBanner: z.boolean().optional(),
 });
 
+// 消息预处理工程(模块设计/消息预处理工程/设计.md §6.2)。
+// MVP:settings 暴露 4 段管线开关 + 部分参数;hooks 只在 PreToolUse / PostToolUse 触发,
+// 其余点位 schema 保留但不接代码。
+
+export const HookSpecSchema = z.object({
+  matcher: z.string().optional(),
+  command: z.string(),
+  timeout: z.number().int().positive().optional(),
+  onError: z.enum(["skip", "throw"]).optional(),
+});
+
+export const HooksConfigSchema = z.object({
+  SessionStart: z.array(HookSpecSchema).optional(),
+  SessionEnd: z.array(HookSpecSchema).optional(),
+  UserPromptSubmit: z.array(HookSpecSchema).optional(),
+  PreLLMRequest: z.array(HookSpecSchema).optional(),
+  PostLLMResponse: z.array(HookSpecSchema).optional(),
+  PreToolUse: z.array(HookSpecSchema).optional(),
+  PostToolUse: z.array(HookSpecSchema).optional(),
+  PreCompact: z.array(HookSpecSchema).optional(),
+  PostCompact: z.array(HookSpecSchema).optional(),
+}).passthrough();
+
+export const InputPreprocessSettingsSchema = z.object({
+  atFileExpand: z.object({
+    enabled: z.boolean().optional(),
+    maxBytes: z.number().int().positive().optional(),
+  }).optional(),
+  templateExpand: z.object({
+    enabled: z.boolean().optional(),
+  }).optional(),
+  maxChars: z.number().int().positive().optional(),
+  redactPreScan: z.object({
+    enabled: z.boolean().optional(),
+  }).optional(),
+}).passthrough();
+
+export const RequestPreprocessSettingsSchema = z.object({
+  trimHistory: z.object({
+    enabled: z.boolean().optional(),
+    budgetRatio: z.number().min(0).max(1).optional(),
+  }).optional(),
+  budgetGuard: z.object({
+    enabled: z.boolean().optional(),
+    budgetRatio: z.number().min(0).max(1).optional(),
+  }).optional(),
+  redact: z.object({
+    enabled: z.boolean().optional(),
+  }).optional(),
+}).passthrough();
+
+export const ResultPreprocessSettingsSchema = z.object({
+  truncate: z.object({
+    budgetBytes: z.number().int().positive().optional(),
+  }).optional(),
+  detectBinary: z.object({
+    enabled: z.boolean().optional(),
+  }).optional(),
+  summarize: z.object({
+    enabled: z.boolean().optional(),
+  }).optional(),
+  normalizeError: z.object({
+    enabled: z.boolean().optional(),
+  }).optional(),
+  redact: z.object({
+    enabled: z.boolean().optional(),
+  }).optional(),
+  injectDiff: z.boolean().optional(),
+}).passthrough();
+
+export const RenderPreprocessSettingsSchema = z.object({
+  streamMarkdown: z.object({
+    enabled: z.boolean().optional(),
+  }).optional(),
+  collapseLong: z.object({
+    enabled: z.boolean().optional(),
+    threshold: z.number().int().positive().optional(),
+  }).optional(),
+}).passthrough();
+
+export const PreprocessSettingsSchema = z.object({
+  input: InputPreprocessSettingsSchema.optional(),
+  request: RequestPreprocessSettingsSchema.optional(),
+  result: ResultPreprocessSettingsSchema.optional(),
+  render: RenderPreprocessSettingsSchema.optional(),
+  /** 全局禁用的 stage name 列表(kebab-case)。 */
+  disable: z.array(z.string()).optional(),
+}).passthrough();
+
 export const SettingsSchema = z.object({
   llm: LLMConfigSchema.optional(),
   providers: z.record(ProviderConfigSchema).optional(),
@@ -43,9 +132,30 @@ export const SettingsSchema = z.object({
     enabled: z.boolean().optional(),
     disabled: z.array(z.string()).optional(),
   }).optional(),
+  hooks: HooksConfigSchema.optional(),
+  preprocess: PreprocessSettingsSchema.optional(),
+  /**
+   * 启动时注入到 process.env 的额外环境变量,仿 Claude Code 的 settings.env。
+   * 值必须是字符串(JSON 无 number→env 的隐式转换;约束传 "1" / "0" 这种字面值)。
+   *
+   * 当前支持的 muse 自识别变量:
+   *   MUSE_DISABLE_CURSOR_BLINK=1   关闭输入框光标闪烁(默认闪烁)
+   *   其他 muse 模块可自行约定 MUSE_* 名字读取。
+   *
+   * 注意:这里写入的变量会进入 process.env,**但 Hook 子进程仍走环境变量白名单**
+   * (见 src/preprocess/hooks.ts),不会自动透传给 hook 命令,避免泄露密钥。
+   */
+  env: z.record(z.string()).optional(),
 }).passthrough();
 
 export type Settings = z.infer<typeof SettingsSchema>;
 export type LLMConfig = z.infer<typeof LLMConfigSchema>;
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export type Permissions = z.infer<typeof PermissionsSchema>;
+export type HookSpec = z.infer<typeof HookSpecSchema>;
+export type HooksConfig = z.infer<typeof HooksConfigSchema>;
+export type PreprocessSettings = z.infer<typeof PreprocessSettingsSchema>;
+export type InputPreprocessSettings = z.infer<typeof InputPreprocessSettingsSchema>;
+export type RequestPreprocessSettings = z.infer<typeof RequestPreprocessSettingsSchema>;
+export type ResultPreprocessSettings = z.infer<typeof ResultPreprocessSettingsSchema>;
+export type RenderPreprocessSettings = z.infer<typeof RenderPreprocessSettingsSchema>;

@@ -29,6 +29,15 @@ class Logger {
   private level: LogLevel = "info";
   private logPath: string;
   private fileEnabled = true;
+  /**
+   * 是否把 warn/error 同时打到 stderr。**默认 false**,因为 Ink TUI 会捕获 stderr
+   * 渲染区,造成 "[error] xxx" 拼接到 PermissionModeBar / footer 等正常 UI 后面的
+   * 视觉污染(B-19 修复)。需要 stderr 输出的场景(cli.tsx die / runOneShot)
+   * 都已经在用 process.stderr.write 显式打,不依赖 logger。
+   *
+   * 单元测试 / 后台脚本可显式 setStderrEnabled(true) 开启。
+   */
+  private stderrEnabled = false;
 
   constructor() {
     const date = new Date().toISOString().slice(0, 10);
@@ -42,6 +51,10 @@ class Logger {
 
   setLevel(level: LogLevel) {
     this.level = level;
+  }
+
+  setStderrEnabled(enabled: boolean) {
+    this.stderrEnabled = enabled;
   }
 
   private write(level: LogLevel, msg: string, extra?: Record<string, unknown>) {
@@ -59,8 +72,8 @@ class Logger {
         // 落盘失败不阻断主流程
       }
     }
-    // 仅 warn/error 默认输出到 stderr，避免污染 stdout
-    if (level === "warn" || level === "error") {
+    // 默认不写 stderr,避免污染 Ink TUI 渲染区
+    if (this.stderrEnabled && (level === "warn" || level === "error")) {
       const prefix = level === "error" ? "[error]" : "[warn]";
       process.stderr.write(`${prefix} ${msg}\n`);
     }

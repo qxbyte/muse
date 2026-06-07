@@ -7,20 +7,22 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { Box, Text, useApp, useInput, useStdout } from "ink";
+import { Box, Static, Text, useApp, useInput, useStdout } from "ink";
 import { BgTextInput } from "./components/BgTextInput.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pickBanner } from "./components/StartupBanner.js";
-import { MessageView } from "./components/MessageView.js";
+import { MessageView, BatchedToolBlock, type BatchedToolUse } from "./components/MessageView.js";
 import { PermissionPrompt, type PermissionRequest } from "./components/PermissionPrompt.js";
 import { ModelSelector, type ModelPickerRequest } from "./components/ModelSelector.js";
 import { SessionSelector, type SessionPickerRequest } from "./components/SessionSelector.js";
 import { QuestionPicker, type QuestionPickerRequest } from "./components/QuestionPicker.js";
 import { BtwOverlay, type BtwRequest } from "./components/BtwOverlay.js";
 import { SlashAutocomplete } from "./components/SlashAutocomplete.js";
+import { AtFileAutocomplete } from "./components/AtFileAutocomplete.js";
+import { queryAtCandidates, type AtCandidate } from "./preprocess/input/at-source.js";
 import { PermissionModeBar } from "./components/PermissionModeBar.js";
 import { FooterStatus } from "./components/FooterStatus.js";
 import { ProgressBanner, type ProgressState } from "./components/ProgressBanner.js";
@@ -33,17 +35,21 @@ import type { ToolRegistry } from "./tools/registry.js";
 import { PermissionGate, type PermissionMode, type PermissionDecision } from "./permission/index.js";
 import { Session, type SessionSummary } from "./session/jsonl.js";
 import { Agent } from "./loop/agent.js";
-import { buildSystemPrompt } from "./loop/system-prompt.js";
 import { loadMemoryIndex } from "./loop/memory.js";
+import { TodoStore } from "./loop/todos.js";
+import { InputPipeline, createInputCtx, buildUserMessage, type InputCtx } from "./preprocess/input/index.js";
+import { RequestPipeline } from "./preprocess/request/index.js";
+import { ResultPipeline } from "./preprocess/result/index.js";
+import { runHooks } from "./preprocess/hooks.js";
+import { PipelineBlockedError } from "./preprocess/pipeline.js";
 import { loadSettings } from "./config/index.js";
 import { VERSION } from "./version.js";
 import { loadModelsRegistry, findEntry, type ModelEntry, type ModelsRegistry } from "./config/models.js";
-import type { Message, ToolMessage, TokenUsage } from "./types/index.js";
+import type { Message, ToolMessage, TokenUsage, ContentPart, ToolUsePart } from "./types/index.js";
 import type { Settings } from "./config/types.js";
 import {
   BUILTIN_SLASH_COMMANDS,
   SlashRegistry,
-  parseSlash,
   type SlashActions,
   type SlashCommand,
   type SlashCommandResult,
@@ -68,6 +74,8 @@ interface UIState {
   history: Message[];
   streamingText: string;
   status: "idle" | "streaming" | "tool";
+  /** Esc 主动中断后的灰字提示文字(null 表示不显示);下次 user_submit 自动清。 */
+  stoppedNote: string | null;
   /** 当前正在跑的工具名（onToolCallStart 设置；下一次 stream_delta 或 turn_end 清空）。 */
   runningTool: string | null;
   /** session 累计 token（/cost 用），不是本轮快照——本轮快照走 turn* 引用 */
@@ -80,16 +88,21 @@ interface UIState {
   turnFirstTextTime: number | null;
   /** 本轮已累计 input tokens（多轮 tool loop 累加） */
   turnInputTokens: number;
+  /** history[0..stableUntilIdx-1] 已属过往 turn,可走 Static(Ink 一次 emit 不再重画),
+   *  消除每次 tool result 到位时的全 history 重渲染闪屏。每次 user_submit 时更新。 */
+  stableUntilIdx: number;
 }
 
 type UIAction =
-  | { type: "user_submit" }
+  | { type: "user_submit"; stableUntil: number }
   | { type: "history_set"; messages: Message[] }
   | { type: "stream_delta"; delta: string }
   | { type: "stream_reset" }
   | { type: "set_status"; status: UIState["status"] }
   | { type: "tool_start"; name: string }
-  | { type: "add_usage"; usage: TokenUsage };
+  | { type: "add_usage"; usage: TokenUsage }
+  | { type: "estimate"; inputTokens: number }
+  | { type: "set_stopped"; note: string | null };
 
 function reducer(state: UIState, action: UIAction): UIState {
   switch (action.type) {
@@ -102,9 +115,29 @@ function reducer(state: UIState, action: UIAction): UIState {
         turnStartTime: Date.now(),
         turnFirstTextTime: null,
         turnInputTokens: 0,
+        stoppedNote: null,           // 新一轮开始,清掉上一轮 abort 残留提示
+        stableUntilIdx: action.stableUntil, // 之前所有 turn 落定,可以丢进 Static
       };
-    case "history_set":
-      return { ...state, history: action.messages };
+    case "history_set": {
+      // 智能去重:如果 history 末尾的 assistant message 已经包含 streamingText 的内容,
+      // 自动清空 streamingText 避免"屏幕上+history 各显示一份"的重复。
+      // 这条主要给 abort 路径用:abort 不 stream_reset → streamingText 保留显示;
+      // 一旦 Agent 把已流出 text push 进 history(可能含 [interrupted] 标识),自动接管显示。
+      let nextStreamingText = state.streamingText;
+      if (state.streamingText.trim()) {
+        const last = action.messages[action.messages.length - 1];
+        if (last?.role === "assistant" && Array.isArray(last.content)) {
+          const lastText = last.content
+            .filter((p): p is { type: "text"; text: string } => p.type === "text")
+            .map((p) => p.text)
+            .join("\n");
+          if (lastText.includes(state.streamingText.trim())) {
+            nextStreamingText = "";
+          }
+        }
+      }
+      return { ...state, history: action.messages, streamingText: nextStreamingText };
+    }
     case "stream_delta":
       // 文本流出意味着 LLM 在思考 / 回话——若刚才在 tool 阶段，自然过渡为 streaming
       // 第一次流出时打 turnFirstTextTime 时间戳（"thought for" 用），冻结不再变
@@ -128,11 +161,19 @@ function reducer(state: UIState, action: UIAction): UIState {
     case "add_usage":
       return {
         ...state,
+        // session 累计:每次 LLM call 的 input/output 都累加,代表本次会话总计费量
         inputTokens: state.inputTokens + action.usage.inputTokens,
         outputTokens: state.outputTokens + action.usage.outputTokens,
         totalTokens: state.totalTokens + action.usage.totalTokens,
-        turnInputTokens: state.turnInputTokens + action.usage.inputTokens,
+        // 本轮 ctx 快照:用最新一次 LLM call 的 inputTokens 覆盖,代表"当前 context 占用"。
+        // 不累加(累加错把多轮 tool loop 的每次 input 叠在一起,ctx% 爆表)。
+        turnInputTokens: action.usage.inputTokens,
       };
+    case "estimate":
+      // 流式开始前的估算,只更新本轮 ctx 快照,不进 session 累计
+      return { ...state, turnInputTokens: action.inputTokens };
+    case "set_stopped":
+      return { ...state, stoppedNote: action.note };
   }
 }
 
@@ -171,6 +212,9 @@ export function App({
     turnStartTime: 0,
     turnFirstTextTime: null,
     turnInputTokens: 0,
+    stoppedNote: null,
+    // 启动时 initialMessages(/resume 加载或 --continue)整段当稳定历史:不会再改
+    stableUntilIdx: initialMessages?.length ?? 0,
   });
 
   const messagesRef = useRef<Message[]>(initialMessages ?? []);
@@ -185,8 +229,8 @@ export function App({
     setInput(value);
     setInputRemountKey((k) => k + 1);
   };
-  // 粘贴 registry：大段粘贴的原文按 id 存这里，输入框里只显示 [Pasted text #N +M lines]
-  // 占位符。提交 / 入队 dequeue 时再用 expandPastes 还原成原文发给 LLM。
+  // 粘贴 registry:大段粘贴的原文按 id 存这里,输入框里只显示 [Pasted text #N +M lines]
+  // 占位符。提交时由 InputPipeline 的 paste-expand stage 还原成原文发给 LLM。
   // 用 ref 不用 state——内容只在 onPaste/onSubmit 的瞬时事件里读，不需要触发渲染。
   const pasteRegistryRef = useRef<{ map: Map<number, string>; nextId: number }>({
     map: new Map(),
@@ -200,6 +244,20 @@ export function App({
     return `[Pasted text #${id} +${lines} lines]`;
   }, []);
 
+  // 图片 registry:Cmd+V 直接粘图(BgTextInput 同步检测剪贴板)。
+  // 输入框里只显示 [Image #N] 占位符,提交时由 InputPipeline 的
+  // expand-image-placeholder stage 还原为 ImagePart。
+  const imageRegistryRef = useRef<{
+    map: Map<number, { data: Buffer; mediaType: "image/png" }>;
+    nextId: number;
+  }>({ map: new Map(), nextId: 1 });
+  const handlePasteImage = useCallback((data: Buffer, mediaType: "image/png"): string => {
+    const reg = imageRegistryRef.current;
+    const id = reg.nextId++;
+    reg.map.set(id, { data, mediaType });
+    return `[Image #${id}]`;
+  }, []);
+
   const [pending, setPending] = useState<PermissionRequest | null>(null);
   const [picker, setPicker] = useState<ModelPickerRequest | null>(null);
   const [sessionPicker, setSessionPicker] = useState<SessionPickerRequest | null>(null);
@@ -209,15 +267,24 @@ export function App({
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const agentRef = useRef<Agent | null>(null);
 
+  // 本轮 abort controller:handleSubmit 开始时新建,Esc 触发 abort,onTurnEnd 清空
+  const turnAbortRef = useRef<AbortController | null>(null);
+
+  // 双击 Esc rewind 检测:第一次 Esc 落入 idle 状态时记下时间戳;500ms 内再 Esc → rewind
+  const lastEscRef = useRef<number>(0);
+  const ESC_DOUBLE_WINDOW_MS = 500;
+  const [escHint, setEscHint] = useState<string | null>(null); // "Press Esc again to rewind"
+
   // 输入队列：模型在跑时用户继续提交的消息暂存在这里，本轮结束 onTurnEnd 自动出队跑下一轮
-  // ref 作真相源（同步访问），state 用于触发 UI 重渲染显示队列预览
-  const queuedInputsRef = useRef<string[]>([]);
-  const [queuedInputs, setQueuedInputs] = useState<string[]>([]);
-  const enqueueInput = (text: string) => {
-    queuedInputsRef.current.push(text);
+  // ref 作真相源(同步访问),state 用于触发 UI 重渲染显示队列预览
+  type QueuedInput = string | ContentPart[];
+  const queuedInputsRef = useRef<QueuedInput[]>([]);
+  const [queuedInputs, setQueuedInputs] = useState<QueuedInput[]>([]);
+  const enqueueInput = (input: QueuedInput) => {
+    queuedInputsRef.current.push(input);
     setQueuedInputs([...queuedInputsRef.current]);
   };
-  const dequeueInput = (): string | null => {
+  const dequeueInput = (): QueuedInput | null => {
     if (queuedInputsRef.current.length === 0) return null;
     const front = queuedInputsRef.current.shift()!;
     setQueuedInputs([...queuedInputsRef.current]);
@@ -259,6 +326,56 @@ export function App({
     if (autocompleteIndex >= len) setAutocompleteIndex(0);
   }, [autocomplete, autocompleteIndex]);
 
+  // @ 引用 fuzzy 补全。
+  // 检测光标位置往前找最后一个 `@`,后面没有空白前的段是 query。input 为简化用
+  // 整串末尾的 `@xxx` 段(不跟踪光标,与 SlashAutocomplete 一致)。
+  const atQuery = useMemo<string | null>(() => {
+    // slash 模式已激活时不触发 @
+    if (input.startsWith("/")) return null;
+    // 找最后一个 @,要求它前面是行首或空白
+    const idx = input.lastIndexOf("@");
+    if (idx < 0) return null;
+    if (idx > 0 && !/\s/.test(input[idx - 1])) return null;
+    const tail = input.slice(idx + 1);
+    if (/\s/.test(tail)) return null;
+    return tail;
+  }, [input]);
+
+  const [atMatches, setAtMatches] = useState<AtCandidate[]>([]);
+  const [atIndex, setAtIndex] = useState(0);
+  useEffect(() => {
+    if (atQuery === null) {
+      setAtMatches([]);
+      return;
+    }
+    let cancelled = false;
+    queryAtCandidates(cwd, atQuery)
+      .then((cands) => {
+        if (!cancelled) setAtMatches(cands);
+      })
+      .catch(() => {
+        if (!cancelled) setAtMatches([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [atQuery, cwd]);
+  useEffect(() => {
+    if (atIndex >= atMatches.length) setAtIndex(0);
+  }, [atMatches, atIndex]);
+
+  /** 选中候选 → 替换 input 末尾的 @query 段。dir 末尾加 `/` 让用户继续展开。 */
+  const acceptAtCandidate = useCallback(
+    (cand: AtCandidate) => {
+      const idx = input.lastIndexOf("@");
+      if (idx < 0) return;
+      const prefix = input.slice(0, idx);
+      const replacement = cand.isDir ? `@${cand.rel}/` : `@${cand.rel} `;
+      commitInput(prefix + replacement);
+    },
+    [input],
+  );
+
   // 终端 tab/window 标题：idle 静态项目名，busy 时旋转 spinner + 工具名。
   // 100ms tick / 10 帧 braille——切到别的窗口也能从 dock 看出 muse 还在跑。
   useEffect(() => {
@@ -297,14 +414,41 @@ export function App({
     };
   }, [cwd]);
 
+  // SessionStart / SessionEnd hooks
+  const [sessionExtraPrompt, setSessionExtraPrompt] = useState<string>("");
+  const turnCountRef = useRef<number>(0);
+  const sessionStartTimeRef = useRef<number>(Date.now());
   useEffect(() => {
-    const systemPrompt = buildSystemPrompt({
-      cwd,
-      model: llm.model,
-      provider: llm.providerName,
-      lang,
-      toolNames: tools.list().map((t) => t.name),
-      memoryIndex,
+    let cancelled = false;
+    runHooks(
+      "SessionStart",
+      { cwd, mode: permissions.getMode(), modelId: llm.model },
+      settings.hooks,
+    )
+      .then((out) => {
+        if (cancelled) return;
+        if (typeof out.extraSystemPrompt === "string") setSessionExtraPrompt(out.extraSystemPrompt);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      // SessionEnd:fire-and-forget
+      const durationMs = Date.now() - sessionStartTimeRef.current;
+      runHooks(
+        "SessionEnd",
+        { durationMs, turnCount: turnCountRef.current },
+        settings.hooks,
+      ).catch(() => {});
+    };
+  }, [cwd, llm.model, settings.hooks]);
+
+  useEffect(() => {
+    const todos = new TodoStore();
+    const requestPipeline = RequestPipeline({
+      disable: settings.preprocess?.disable,
+    });
+    const resultPipeline = ResultPipeline({
+      disable: settings.preprocess?.disable,
     });
 
     const agent = new Agent({
@@ -313,7 +457,19 @@ export function App({
       permissions,
       session,
       cwd,
-      systemPrompt,
+      todos,
+      requestPipeline,
+      requestServices: {
+        todos,
+        memoryIndex,
+        toolRegistry: tools,
+        lang,
+        provider: llm.providerName,
+        extraSystemPrompt: sessionExtraPrompt,
+      },
+      resultPipeline,
+      resultSettings: settings.preprocess?.result,
+      hooks: settings.hooks,
       events: {
         onText: (delta) => dispatch({ type: "stream_delta", delta }),
         onToolCallStart: (_id, name) => dispatch({ type: "tool_start", name }),
@@ -334,29 +490,56 @@ export function App({
           dispatch({ type: "set_status", status: "streaming" });
         },
         onUsage: (usage: TokenUsage) => dispatch({ type: "add_usage", usage }),
+        onEstimate: (inputTokens) => dispatch({ type: "estimate", inputTokens }),
         onTurnEnd: () => {
+          turnCountRef.current++;
           const msgs = [...agent.getMessages()];
           messagesRef.current = msgs;
           dispatch({ type: "history_set", messages: msgs });
-          dispatch({ type: "stream_reset" });
+          // abort 触发的 onTurnEnd 不主动 stream_reset:保留 streamingText 让用户看到已流出内容。
+          // 上面 history_set 内含智能去重,如果 history 已包含该 text 会自动清 streamingText
+          // 避免双显示;Agent 没成功 push 时(corner case),streamingText 兜底保留。
+          if (!turnAbortRef.current?.signal.aborted) {
+            dispatch({ type: "stream_reset" });
+          }
           dispatch({ type: "set_status", status: "idle" });
 
-          // 队列有货：取下一条立刻开新轮（setTimeout 跳出 onTurnEnd 内部递归调栈）
+          // 队列有货:取下一条立刻开新轮(setTimeout 跳出 onTurnEnd 内部递归调栈)。
+          // 队列里存的已经是 InputPipeline 处理后的最终文本(含 @file 展开等),直送 agent。
+          // 同样需要新建本轮 abort controller — Esc 中断也作用于队列触发的下一轮
           const next = dequeueInput();
           if (next) {
             setTimeout(() => {
-              dispatch({ type: "user_submit" });
-              // 队列里存的是占位符版本；dequeue 时还原成原文
-              const expanded = expandPastes(next, pasteRegistryRef.current.map);
-              agent.runTurn(expanded).catch((err) => {
-                const m = err instanceof Error ? err.message : String(err);
-                dispatch({ type: "stream_delta", delta: `\n[error] ${m}\n` });
-                dispatch({ type: "set_status", status: "idle" });
-              });
+              dispatch({ type: "user_submit", stableUntil: messagesRef.current.length });
+              const ctrl = (turnAbortRef.current = new AbortController());
+              agent
+                .runTurn(next, ctrl.signal)
+                .catch((err) => {
+                  if (ctrl.signal.aborted || isAbortLike(err)) {
+                    // 用户主动 Esc:不 stream_reset,保留 streamingText 让用户看到已流出内容。
+                    // history_set 智能去重(reducer 内)会在 Agent 把内容 push 进 history 时
+                    // 自动清空 streamingText,避免双显示。
+                    dispatch({ type: "set_status", status: "idle" });
+                    dispatch({ type: "set_stopped", note: "⏹ Stopped by Esc" });
+                    return;
+                  }
+                  const m = err instanceof Error ? err.message : String(err);
+                  dispatch({ type: "stream_delta", delta: `\n[error] ${m}\n` });
+                  dispatch({ type: "set_status", status: "idle" });
+                })
+                .finally(() => {
+                  if (turnAbortRef.current === ctrl) turnAbortRef.current = null;
+                });
             }, 0);
           }
         },
         onError: (err) => {
+          if (turnAbortRef.current?.signal.aborted || isAbortLike(err)) {
+            // 不 stream_reset,保留已流出内容;reducer 内 history_set 智能去重
+            dispatch({ type: "set_status", status: "idle" });
+            dispatch({ type: "set_stopped", note: "⏹ Stopped by Esc" });
+            return;
+          }
           dispatch({ type: "stream_delta", delta: `\n[error] ${err.message}\n` });
           dispatch({ type: "set_status", status: "idle" });
         },
@@ -372,7 +555,7 @@ export function App({
     });
     agent.setMessages(messagesRef.current);
     agentRef.current = agent;
-  }, [llm, tools, permissions, session, cwd, lang, memoryIndex]);
+  }, [llm, tools, permissions, session, cwd, lang, memoryIndex, sessionExtraPrompt]);
 
   // 键盘：Ctrl+C 全局退出 + Shift+Tab 循环切 permission mode + autocomplete ↑↓ Tab Esc 导航
   useInput(
@@ -386,6 +569,37 @@ export function App({
         setMode(next);
         return;
       }
+
+      // Esc 处理(优先级高于补全/历史,但低于 autocomplete 自身的 Esc 处理):
+      //   - 非 idle 状态:中断当前 stream / 工具执行
+      //   - idle 状态(无 autocomplete):双击 500ms 内 rewind 上一轮
+      if (key.escape && !(autocomplete && autocomplete.matches.length > 0) && !(atQuery !== null && atMatches.length > 0)) {
+        if (state.status !== "idle") {
+          turnAbortRef.current?.abort();
+          setEscHint(null);
+          return;
+        }
+        // idle 状态:双击检测
+        const now = Date.now();
+        if (now - lastEscRef.current < ESC_DOUBLE_WINDOW_MS) {
+          // 双击 → rewind
+          lastEscRef.current = 0;
+          setEscHint(null);
+          const ok = rewindLastTurn();
+          if (!ok) setEscHint("(nothing to rewind)");
+          return;
+        }
+        // 单击 → 提示 + 等第二下
+        lastEscRef.current = now;
+        setEscHint("Press Esc again to rewind last turn");
+        setTimeout(() => {
+          if (Date.now() - lastEscRef.current >= ESC_DOUBLE_WINDOW_MS) {
+            setEscHint(null);
+          }
+        }, ESC_DOUBLE_WINDOW_MS + 50);
+        return;
+      }
+
       if (autocomplete && autocomplete.matches.length > 0) {
         const len = autocomplete.matches.length;
         if (key.upArrow) {
@@ -401,7 +615,26 @@ export function App({
         return;
       }
 
-      // autocomplete 关闭时：↑/↓ 翻输入历史
+      // @ 引用自动补全
+      if (atQuery !== null && atMatches.length > 0) {
+        const len = atMatches.length;
+        if (key.upArrow) {
+          setAtIndex((i) => (i - 1 + len) % len);
+        } else if (key.downArrow) {
+          setAtIndex((i) => (i + 1) % len);
+        } else if (key.tab || (key.return && false /* Enter 由 onSubmit 处理 */)) {
+          // Tab 接受当前焦点
+          const picked = atMatches[atIndex];
+          if (picked) acceptAtCandidate(picked);
+        } else if (key.escape) {
+          // 退出补全 picker:删掉 @ 之后的字符,保留 @
+          const idx = input.lastIndexOf("@");
+          if (idx >= 0) commitInput(input.slice(0, idx));
+        }
+        return;
+      }
+
+      // autocomplete 关闭时:↑/↓ 翻输入历史
       const hist = inputHistoryRef.current;
       if (key.upArrow && hist.length > 0) {
         const cur = historyIndexRef.current;
@@ -508,10 +741,12 @@ export function App({
 
   const handleSubmit = useCallback(
     async (value: string) => {
-      const trimmed = value.trim();
-      if (!trimmed) return;
+      const rawValue = value.trim();
+      if (!rawValue) return;
+      // 裸 "exit" 视同 "/exit",方便从 shell 习惯过来的用户直接退出
+      const trimmed = rawValue === "exit" ? "/exit" : rawValue;
 
-      // autocomplete 开 + 有候选 + 用户没在精确命名 → 补全到 input，不提交
+      // autocomplete 开 + 有候选 + 用户没在精确命名 → 补全到 input,不提交
       if (autocomplete && autocomplete.matches.length > 0) {
         const exact = autocomplete.matches.find(
           (c) => c.name === autocomplete.query || c.aliases?.includes(autocomplete.query),
@@ -523,32 +758,90 @@ export function App({
         }
       }
 
-      const parsed = parseSlash(trimmed);
-      if (parsed) {
+      // @ autocomplete 开 + 有候选 → Enter 接受焦点而非提交
+      if (atQuery !== null && atMatches.length > 0) {
+        const picked = atMatches[atIndex];
+        if (picked) {
+          acceptAtCandidate(picked);
+          return;
+        }
+      }
+
+      // InputPipeline:slash-dispatch / paste-expand / at-file-expand / at-image /
+      //                template-expand / validate-length / redact-pre-scan
+      const activeEntry = modelsRegistry ? findEntry(modelsRegistry, llm.model) : undefined;
+      const inputCtx = createInputCtx({
+        raw: trimmed,
+        source: "tty",
+        cwd,
+        mode: permissions.getMode(),
+        settings: settings.preprocess?.input,
+        capabilities: { supportsImages: activeEntry?.supportsImages ?? false },
+      });
+      const pipeline = InputPipeline({
+        pasteRegistry: pasteRegistryRef.current.map,
+        imageRegistry: imageRegistryRef.current.map,
+        disable: settings.preprocess?.disable,
+      });
+      try {
+        await pipeline.run(inputCtx);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        appendAssistantText(`[input pipeline error] ${msg}`);
+        commitInput("");
+        return;
+      }
+
+      // pipeline 产出的告警(超长截断 / 脱敏命中 / @file 跳过等)显示给用户
+      if (inputCtx.warnings.length > 0) {
+        const msg = inputCtx.warnings.map((w) => `[${w.stage}] ${w.message}`).join("\n");
+        appendAssistantText(msg);
+      }
+
+      // UserPromptSubmit hook:slash 命令不触发(slash 走系统自处理路径,不上 LLM)
+      if (!inputCtx.slashCommand) {
+        try {
+          const hookOut = await runHooks(
+            "UserPromptSubmit",
+            { text: inputCtx.text, attachments: inputCtx.attachments, source: inputCtx.source },
+            settings.hooks,
+          );
+          if (typeof hookOut.text === "string") inputCtx.text = hookOut.text;
+        } catch (err) {
+          if (err instanceof PipelineBlockedError) {
+            appendAssistantText(`[blocked by UserPromptSubmit hook] ${err.reason}`);
+            commitInput("");
+            return;
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          appendAssistantText(`[UserPromptSubmit hook error] ${msg}`);
+          commitInput("");
+          return;
+        }
+      }
+
+      if (inputCtx.slashCommand) {
         // 模型在跑时 slash 命令一律拒绝——/clear /compact /resume 会改 messages 与 agent
-        // 正在跑的回复冲突；reduce 也无法把 slash 排到队列里执行（会污染 history 时序）。
-        // 用户可 Ctrl+C 取消当前轮，或等结束。
+        // 正在跑的回复冲突;reduce 也无法把 slash 排到队列里执行(会污染 history 时序)。
         if (state.status !== "idle") {
           commitInput("");
           return;
         }
-        const cmd = slash.get(parsed.name);
+        const cmd = slash.get(inputCtx.slashCommand.name);
         commitInput("");
         if (!cmd) {
-          appendAssistantText(`Unknown command: /${parsed.name}. Try /help.`);
+          appendAssistantText(`Unknown command: /${inputCtx.slashCommand.name}. Try /help.`);
           return;
         }
         try {
           const result = await cmd.execute({
-            args: parsed.args,
+            args: inputCtx.slashCommand.args,
             cwd,
             llm,
             session,
             settings,
             settingsSources,
             modelsRegistry,
-            // 用 ref 而非 state.history：命令体可能在 await 期间调 setMessages
-            // 改变 messages（如 /resume / /compact），后续 display 必须基于最新值
             history: messagesRef.current,
             tokens: {
               inputTokens: state.inputTokens,
@@ -561,45 +854,72 @@ export function App({
           applySlashResult(result);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          appendAssistantText(`[error] /${parsed.name}: ${msg}`);
+          appendAssistantText(`[error] /${inputCtx.slashCommand.name}: ${msg}`);
         }
         return;
       }
 
       commitInput("");
-      // 推入历史（去重相邻重复），重置游标
+      // 推入历史(去重相邻重复),重置游标。历史里存原文(用户在 ↑ 翻历史时见原始 trimmed)。
       const hist = inputHistoryRef.current;
       if (hist[hist.length - 1] !== trimmed) hist.push(trimmed);
       if (hist.length > 200) hist.shift();
       historyIndexRef.current = -1;
       savedDraftRef.current = "";
 
-      // 模型在跑 → 入队，等本轮 onTurnEnd 出队继续
-      if (state.status !== "idle") {
-        enqueueInput(trimmed);
+      // pipeline 输出组装成 user content:无附件→string;有附件→ContentPart[]
+      const userContent = buildUserMessage(inputCtx);
+
+      // 阻断空消息:InputPipeline 把占位符 / 模板等全消掉后,可能 text 空 + 无 attachment;
+      // 直接送 LLM 会让模型"自由发挥"(看到空 user message 自己猜要干嘛)。
+      const isEmpty =
+        typeof userContent === "string"
+          ? userContent.trim().length === 0
+          : userContent.every(
+              (p) => p.type !== "file" && p.type !== "image" && (p.type !== "text" || p.text.trim().length === 0),
+            );
+      if (isEmpty) {
+        appendAssistantText(
+          inputCtx.warnings.length > 0
+            ? `(empty message after preprocessing — see warnings above; nothing sent)`
+            : `(empty message — nothing sent)`,
+        );
         return;
       }
 
-      dispatch({ type: "user_submit" });
-      // 立刻把用户消息塞进可见历史，UX 上"瞬间出现"——别等 Agent runTurn 结束才 history_set
-      // Agent 内部也会 push 同样的 message，turn 结束时 onTurnEnd 用 agent.getMessages()
-      // 同步回来一次就行，不会重复
-      const expanded = expandPastes(trimmed, pasteRegistryRef.current.map);
+      // 模型在跑 → 入队;队列里存最终内容,dequeue 直送 agent
+      if (state.status !== "idle") {
+        enqueueInput(userContent);
+        return;
+      }
+
+      dispatch({ type: "user_submit", stableUntil: messagesRef.current.length });
+      // 立刻把用户消息塞进可见历史,UX 上"瞬间出现"
       {
-        const userMsg: Message = { role: "user", content: expanded };
+        const userMsg: Message = { role: "user", content: userContent };
         const next = [...messagesRef.current, userMsg];
         messagesRef.current = next;
         dispatch({ type: "history_set", messages: next });
       }
+      // 新建本轮 abort controller,Esc 触发它 → Agent 内 LLM stream + 工具 execa 联动中断
+      const ctrl = (turnAbortRef.current = new AbortController());
       try {
-        await agentRef.current?.runTurn(expanded);
+        await agentRef.current?.runTurn(userContent, ctrl.signal);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        dispatch({ type: "stream_delta", delta: `\n[error] ${msg}\n` });
-        dispatch({ type: "set_status", status: "idle" });
+        if (ctrl.signal.aborted || isAbortLike(err)) {
+          // 用户主动 Esc:Agent 内已经把已流出内容标 [interrupted] 持久化,这里只清屏
+          dispatch({ type: "stream_reset" });
+          dispatch({ type: "set_status", status: "idle" });
+        } else {
+          const msg = err instanceof Error ? err.message : String(err);
+          dispatch({ type: "stream_delta", delta: `\n[error] ${msg}\n` });
+          dispatch({ type: "set_status", status: "idle" });
+        }
+      } finally {
+        if (turnAbortRef.current === ctrl) turnAbortRef.current = null;
       }
     },
-    [slash, cwd, llm, session, settings, settingsSources, modelsRegistry, state.inputTokens, state.outputTokens, state.totalTokens, state.status, actions, autocomplete, autocompleteIndex],
+    [slash, cwd, llm, session, settings, settingsSources, modelsRegistry, state.inputTokens, state.outputTokens, state.totalTokens, state.status, actions, autocomplete, autocompleteIndex, atQuery, atMatches, atIndex, acceptAtCandidate, permissions],
   );
 
   function appendAssistantText(text: string) {
@@ -622,12 +942,49 @@ export function App({
     }
   }
 
+  /**
+   * 双 Esc rewind:找最后一条 user message,把它的文本塞回输入框,删除它和它之后的所有消息。
+   * 这是 Claude Code "Double Esc time-machine" 的简化版(muse 没做 file checkpoint)。
+   * 返 true 表示成功 rewind,false 表示没东西可 rewind。
+   */
+  function rewindLastTurn(): boolean {
+    const msgs = messagesRef.current;
+    // 倒着找最后一条 user message
+    let userIdx = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "user") {
+        userIdx = i;
+        break;
+      }
+    }
+    if (userIdx < 0) return false;
+    const userMsg = msgs[userIdx];
+    const text = typeof userMsg.content === "string"
+      ? userMsg.content
+      : userMsg.content
+          .filter((p): p is { type: "text"; text: string } => p.type === "text")
+          .map((p) => p.text)
+          .join("\n");
+    // 删该 user message 自己 + 之后所有
+    const next = msgs.slice(0, userIdx);
+    messagesRef.current = next;
+    agentRef.current?.setMessages(next);
+    dispatch({ type: "history_set", messages: next });
+    // 塞回输入框
+    commitInput(text);
+    return true;
+  }
+
+  // Banner 直接挂在根 column 内,在 React reconcile 里属于稳定子树不会重 mount。
+  // (曾经试过包 <Static>,Ink 在嵌套 Box children 渲染时可能不输出 banner,改回直接挂。)
   const banner = !showBanner
     ? null
     : pickBanner(termWidth, { version: VERSION, model: llm.model, cwd: shortCwd(cwd) });
 
-  // 配对 tool_use ↔ tool_result：AssistantMessage 把 result 内联渲染在 call 下方（树形）；
-  // 顶层 history loop 跳过已被内联的 ToolMessage 避免重复
+  // 配对 tool_use ↔ tool_result:AssistantMessage 把 result 内联渲染在 call 下方(树形);
+  // 顶层 history loop 跳过已被内联的 ToolMessage 避免重复。
+  // 注意:tool message 在 batch 模式下也算"已内联"(由 BatchedToolBlock 接管显示),
+  //      所以 inlinedIds 在下面 useMemo 里建立后,batch grouping 与 render 都依赖它。
   const { resultsByCallId, inlinedIds } = useMemo(() => {
     const byId = new Map<string, ToolMessage>();
     const used = new Set<string>();
@@ -642,13 +999,136 @@ export function App({
     return { resultsByCallId: byId, inlinedIds: used };
   }, [state.history]);
 
+  // Batch 聚合 + TodoWrite 去重:
+  // 1) 连续 "只含 tool_use(且非 TodoWrite)" 的 assistant message 合并为 BatchedToolBlock
+  //    (muse 的 agent 串行 tool loop——每个工具单独一条 assistant message,散开体验差)
+  // 2) TodoWrite 是 in-place 状态更新语义:history 里 N 次 TodoWrite 只渲染最后一次的 → Todos,
+  //    前面的 TodoWrite-only message 全部跳过(避免多个 → Todos 块刷屏)
+  // maxSrcIdx:group 涉及的 history index 上界,用于 Static 切分(< stableUntilIdx → 进 Static)
+  type RenderGroup =
+    | { kind: "msg"; key: string; msg: Message; maxSrcIdx: number }
+    | { kind: "batch"; key: string; uses: BatchedToolUse[]; maxSrcIdx: number };
+  // 反扫找最后一次 TodoWrite 的 part id —— part 级去重的锚点(grouping + MessageView 共用)
+  const latestTodoWritePartId = useMemo(() => {
+    for (let i = state.history.length - 1; i >= 0; i--) {
+      const m = state.history[i];
+      if (m.role === "assistant" && Array.isArray(m.content)) {
+        // 一条 message 里可能有多个 TodoWrite,取最后一个
+        for (let j = m.content.length - 1; j >= 0; j--) {
+          const p = m.content[j];
+          if (p.type === "tool_use" && p.name === "TodoWrite") return p.id;
+        }
+      }
+    }
+    return undefined;
+  }, [state.history]);
+
+  const renderGroups = useMemo(() => {
+    // 反扫找最后一次出现 TodoWrite 的 assistant message index
+    let lastTodoWriteIdx = -1;
+    for (let i = state.history.length - 1; i >= 0; i--) {
+      const m = state.history[i];
+      if (m.role === "assistant" && Array.isArray(m.content)) {
+        if (m.content.some((p) => p.type === "tool_use" && p.name === "TodoWrite")) {
+          lastTodoWriteIdx = i;
+          break;
+        }
+      }
+    }
+    const groups: RenderGroup[] = [];
+    let pending: Array<{ part: ToolUsePart; result?: ToolMessage; srcIndex: number; srcMsg: Message }> = [];
+    const flush = () => {
+      if (pending.length === 0) return;
+      const maxSrc = pending[pending.length - 1].srcIndex;
+      if (pending.length === 1) {
+        groups.push({ kind: "msg", key: `msg-${pending[0].srcIndex}`, msg: pending[0].srcMsg, maxSrcIdx: maxSrc });
+      } else {
+        groups.push({
+          kind: "batch",
+          key: `batch-${pending[0].srcIndex}-${maxSrc}`,
+          uses: pending.map((p) => ({ part: p.part, result: p.result })),
+          maxSrcIdx: maxSrc,
+        });
+      }
+      pending = [];
+    };
+    for (let i = 0; i < state.history.length; i++) {
+      const msg = state.history[i];
+      if (msg.role === "tool" && msg.toolUseId && inlinedIds.has(msg.toolUseId)) continue;
+      // 跳过非"最后一次"的 TodoWrite-only assistant message:旧版本不再展示
+      if (msg.role === "assistant" && Array.isArray(msg.content)) {
+        const isTodoWriteOnly =
+          msg.content.length > 0 &&
+          msg.content.every((p) => p.type === "tool_use" && p.name === "TodoWrite");
+        if (isTodoWriteOnly && i !== lastTodoWriteIdx) {
+          flush();
+          continue;
+        }
+      }
+      if (msg.role === "assistant" && Array.isArray(msg.content)) {
+        const onlyTools =
+          msg.content.length > 0 &&
+          msg.content.every((p) => p.type === "tool_use" && p.name !== "TodoWrite");
+        if (onlyTools) {
+          for (const p of msg.content) {
+            if (p.type === "tool_use") {
+              pending.push({ part: p, result: resultsByCallId.get(p.id), srcIndex: i, srcMsg: msg });
+            }
+          }
+          continue;
+        }
+      }
+      flush();
+      groups.push({ kind: "msg", key: `msg-${i}`, msg, maxSrcIdx: i });
+    }
+    flush();
+    return groups;
+  }, [state.history, resultsByCallId, inlinedIds]);
+
+  // 按 stableUntilIdx 切分 renderGroups:稳定 groups 走 Static,不再参与重画;动态 groups 走普通渲染。
+  // 这是修复"工具快速完成时全 history 重绘 → 闪屏"的关键(详见 实现日志)。
+  const { staticGroups, dynamicGroups } = useMemo(() => {
+    const cutoff = state.stableUntilIdx;
+    const staticG: typeof renderGroups = [];
+    const dynamicG: typeof renderGroups = [];
+    for (const g of renderGroups) {
+      if (g.maxSrcIdx < cutoff) staticG.push(g);
+      else dynamicG.push(g);
+    }
+    return { staticGroups: staticG, dynamicGroups: dynamicG };
+  }, [renderGroups, state.stableUntilIdx]);
+
   return (
     <Box flexDirection="column">
       {banner}
+      {/* 稳定历史走 Static:Ink 一次 emit 到 stdout,后续 state 变化不再 reconcile/repaint 这些行 → 消除闪屏 */}
+      <Static items={staticGroups}>
+        {(g) =>
+          g.kind === "batch" ? (
+            <BatchedToolBlock key={g.key} uses={g.uses} />
+          ) : (
+            <MessageView
+              key={g.key}
+              message={g.msg}
+              resultsByCallId={resultsByCallId}
+              latestTodoWritePartId={latestTodoWritePartId}
+            />
+          )
+        }
+      </Static>
       <Box flexDirection="column" marginTop={1}>
-        {state.history.map((msg, i) => {
-          if (msg.role === "tool" && inlinedIds.has(msg.toolUseId)) return null;
-          return <MessageView key={i} message={msg} resultsByCallId={resultsByCallId} />;
+        {dynamicGroups.map((g) => {
+          if (g.kind === "batch") {
+            return <BatchedToolBlock key={g.key} uses={g.uses} />;
+          }
+          return (
+            <MessageView
+              key={g.key}
+              message={g.msg}
+              resultsByCallId={resultsByCallId}
+              latestTodoWritePartId={latestTodoWritePartId}
+            />
+          );
         })}
         {state.streamingText && (
           <Box flexDirection="row" marginTop={1}>
@@ -725,15 +1205,23 @@ export function App({
         />
       )}
       {progress && <ProgressBanner state={progress} />}
+      {state.stoppedNote && (
+        <Box marginTop={1} marginLeft={2}>
+          <Text dimColor>{state.stoppedNote}</Text>
+        </Box>
+      )}
       {inputVisible && (
         <Box flexDirection="column">
           {queuedInputs.length > 0 && (
             <Box flexDirection="column" marginLeft={2} marginTop={1}>
-              {queuedInputs.map((q, i) => (
-                <Text key={i} color="yellow" dimColor>
-                  {`↳ queued: ${q.length > 60 ? q.slice(0, 60) + "…" : q}`}
-                </Text>
-              ))}
+              {queuedInputs.map((q, i) => {
+                const preview = previewUserContent(q);
+                return (
+                  <Text key={i} color="yellow" dimColor>
+                    {`↳ queued: ${preview.length > 60 ? preview.slice(0, 60) + "…" : preview}`}
+                  </Text>
+                );
+              })}
               <Text dimColor>{`  (will send after current turn · ${queuedInputs.length} pending)`}</Text>
             </Box>
           )}
@@ -754,6 +1242,7 @@ export function App({
                 backgroundColor="#1c1c1c"
                 isActive={acceptingInput}
                 onPaste={handlePaste}
+                onPasteImage={handlePasteImage}
                 placeholder={inputPlaceholder}
               />
             </Box>
@@ -763,6 +1252,9 @@ export function App({
           </Box>
           {autocomplete && autocomplete.matches.length > 0 && (
             <SlashAutocomplete matches={autocomplete.matches} index={autocompleteIndex} />
+          )}
+          {atQuery !== null && atMatches.length > 0 && (
+            <AtFileAutocomplete matches={atMatches} index={atIndex} />
           )}
         </Box>
       )}
@@ -777,6 +1269,11 @@ export function App({
           termWidth={termWidth}
         />
         <PermissionModeBar mode={mode} compact={termWidth < 60} />
+        {escHint && (
+          <Box flexDirection="row">
+            <Text dimColor>{escHint}</Text>
+          </Box>
+        )}
       </Box>
     </Box>
   );
@@ -800,14 +1297,36 @@ function extractUserInputs(messages: Message[]): string[] {
   return out;
 }
 
-// 占位符格式：[Pasted text #<id> +<lines> lines]——与 Claude Code 对齐
-const PASTE_PLACEHOLDER_RE = /\[Pasted text #(\d+) \+\d+ lines\]/g;
+/** 队列 / 历史预览:从 string 或 ContentPart[] 抽一段可读字符。 */
+/**
+ * 判断错误是否是用户主动 abort 的(Esc/Ctrl+C)。覆盖 Vercel SDK "This operation was aborted"
+ * 这种 name 不是 AbortError 但 message 带关键字的 case。
+ */
+function isAbortLike(err: unknown): boolean {
+  if (!err) return false;
+  if (err instanceof Error) {
+    if (err.name === "AbortError") return true;
+    const code = (err as Error & { code?: string }).code;
+    if (code === "ABORT_ERR" || code === "ECANCELED") return true;
+    const msg = err.message.toLowerCase();
+    if (msg.includes("aborted") || msg.includes("cancelled") || msg.includes("canceled")) return true;
+  }
+  return false;
+}
 
-function expandPastes(value: string, map: Map<number, string>): string {
-  return value.replace(PASTE_PLACEHOLDER_RE, (full, id) => {
-    const text = map.get(Number(id));
-    return text ?? full;
-  });
+function previewUserContent(input: string | ContentPart[]): string {
+  if (typeof input === "string") return input;
+  const text = input
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join(" ")
+    .trim();
+  const fileCount = input.filter((p) => p.type === "file").length;
+  const imageCount = input.filter((p) => p.type === "image").length;
+  const tags: string[] = [];
+  if (fileCount > 0) tags.push(`📎 ${fileCount}`);
+  if (imageCount > 0) tags.push(`🖼 ${imageCount}`);
+  return tags.length > 0 ? `${text} (${tags.join(", ")})` : text;
 }
 
 function shortCwd(cwd: string): string {

@@ -188,7 +188,14 @@ async function readSummary(meta: SessionMeta): Promise<SessionSummary> {
   let preview: string | undefined;
   if (firstUser) {
     const c = firstUser.message.content;
-    const text = typeof c === "string" ? c : c.map((p) => (p.type === "text" ? p.text : "")).join(" ").trim();
+    const text = typeof c === "string"
+      ? c
+      : c.map((p) => {
+          if (p.type === "text") return p.text;
+          if (p.type === "file") return `📎`;
+          if (p.type === "image") return `🖼`;
+          return "";
+        }).join(" ").trim();
     preview = text.slice(0, 60).replace(/\s+/g, " ");
   }
   return { ...meta, preview, messageCount: messages.length };
