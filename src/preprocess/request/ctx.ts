@@ -33,8 +33,10 @@ export interface RequestServices {
   memoryEmbeddingIndex?: MemoryIndex;
   /** memory.embedding.topK 配置;默认 5。 */
   memoryEmbeddingTopK?: number;
-  /** memory.embedding.minMemoryCount;少于此值退化到全注入。默认 10。 */
+  /** memory.embedding.minMemoryCount;少于此值退化到全注入。默认 3(2026-06-07 R5 修订)。 */
   memoryEmbeddingMinCount?: number;
+  /** memory.embedding.maxInjectTokens;注入预算上限,超出按 trust 优先级保留。默认 1500。 */
+  memoryEmbeddingMaxInjectTokens?: number;
   /** 工具注册中心,用于 toLLMDefinitions + tool 元数据。 */
   toolRegistry: ToolRegistry;
   /** 输出语言。 */

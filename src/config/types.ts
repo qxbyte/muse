@@ -160,8 +160,10 @@ export const SettingsSchema = z.object({
       apiKey: z.string().optional(),
       /** 检索 top-K(默认 5)。 */
       topK: z.number().int().positive().optional(),
-      /** memory 数量低于此值时退化到全注入(默认 10)。 */
+      /** memory 数量低于此值时退化到全注入(默认 3,2026-06-07 R5 修订)。 */
       minMemoryCount: z.number().int().nonnegative().optional(),
+      /** 注入 token 预算上限,超出按 trust 优先保留(默认 1500)。 */
+      maxInjectTokens: z.number().int().positive().optional(),
     }).optional(),
   }).optional(),
 }).passthrough();

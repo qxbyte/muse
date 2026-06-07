@@ -1,18 +1,22 @@
 /**
  * 长期 Memory:跨 session 持久化的小段知识。
  *
- * 路径约定:~/.muse/projects/<projectHash>/memory/
+ * 两层 scope(2026-06-07 设计扩展):
+ *   - project:`~/.muse/projects/<projectHash>/memory/`(已有)
+ *   - user:`~/.muse/memory/`(新增 — 跨项目用户级)
+ *
+ * 用户级 memory 对当前项目也生效,优先级低于项目级(召回时 project ×1.2)。
+ *
+ * 文件结构(每个 scope 内):
  *   - MEMORY.md       index(每行 `[trust] - [name](name.md) — one-line hook`)
  *   - <name>.md       具体记忆,带 frontmatter(含 trust + source + timestamps)
- *
- * MEMORY.md 前 200 行自动注入 system prompt,让 LLM 每轮都看到。
  *
  * trust 三级(模块设计/Agent 记忆系统/设计.md §4.4):
  *   - trusted   hierarchy 层(MUSE.md / AGENTS.md / managed)
  *   - verified  用户编辑过 / 显式 promote
  *   - auto      LLM 通过 MemoryWrite 自动写入,未审核(可被覆盖)
  *
- * source 来源:user-edit / user-remember / compact-promote / manual-write / imported。
+ * source 来源:user-edit / user-remember / compact-promote / manual-write / imported / promote-scope。
  *
  * 类型:user / feedback / project / reference。
  */
@@ -25,14 +29,17 @@ import { createHash } from "node:crypto";
 
 export type MemoryType = "user" | "feedback" | "project" | "reference";
 export type TrustLevel = "trusted" | "verified" | "auto";
+export type Scope = "project" | "user";
 export type MemorySource =
   | "user-edit"
   | "user-remember"
   | "compact-promote"
   | "manual-write"
-  | "imported";
+  | "imported"
+  | "promote-scope";
 
 export const TRUST_LEVELS: readonly TrustLevel[] = ["trusted", "verified", "auto"];
+export const SCOPES: readonly Scope[] = ["project", "user"];
 
 /**
  * trust 排序:trusted > verified > auto。
@@ -63,62 +70,87 @@ export interface MemoryFile {
   frontmatter: MemoryFrontmatter;
   body: string;
   filePath: string;
+  scope: Scope;
 }
 
 function projectHash(cwd: string): string {
   return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
 }
 
+// ============================== 路径 helpers ==============================
+
 export function memoryDir(cwd: string): string {
   return join(homedir(), ".muse", "projects", projectHash(cwd), "memory");
 }
 
-export function memoryIndexPath(cwd: string): string {
-  return join(memoryDir(cwd), "MEMORY.md");
+export function globalMemoryDir(): string {
+  return join(homedir(), ".muse", "memory");
 }
 
-export function memoryFilePath(cwd: string, name: string): string {
-  return join(memoryDir(cwd), `${name}.md`);
+export function scopeDir(cwd: string, scope: Scope): string {
+  return scope === "user" ? globalMemoryDir() : memoryDir(cwd);
 }
 
-/** 加载 MEMORY.md 前 N 行供 system prompt 注入。 */
+export function memoryIndexPath(cwd: string, scope: Scope = "project"): string {
+  return join(scopeDir(cwd, scope), "MEMORY.md");
+}
+
+export function memoryFilePath(cwd: string, name: string, scope: Scope = "project"): string {
+  return join(scopeDir(cwd, scope), `${name}.md`);
+}
+
+// ============================== 加载 / 读取 ==============================
+
+/** 加载 MEMORY.md 前 N 行供 system prompt 注入。
+ *  默认合并两层:project 在前 + user 在后(用 `---` 分隔)。 */
 export async function loadMemoryIndex(cwd: string, maxLines = 200): Promise<string> {
-  const path = memoryIndexPath(cwd);
-  if (!existsSync(path)) return "";
-  try {
-    const raw = await readFile(path, "utf-8");
-    const lines = raw.split("\n");
-    if (lines.length <= maxLines) return raw.trim();
-    return lines.slice(0, maxLines).join("\n").trim() + `\n... [truncated; ${lines.length - maxLines} more lines]`;
-  } catch {
-    return "";
+  const parts: string[] = [];
+  for (const scope of SCOPES) {
+    const path = memoryIndexPath(cwd, scope);
+    if (!existsSync(path)) continue;
+    try {
+      const raw = await readFile(path, "utf-8");
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      const tag = scope === "project" ? "# project memory" : "# user (global) memory";
+      parts.push(`${tag}\n${trimmed}`);
+    } catch {
+      // skip
+    }
   }
+  if (parts.length === 0) return "";
+  const full = parts.join("\n\n---\n\n");
+  const lines = full.split("\n");
+  if (lines.length <= maxLines) return full;
+  return lines.slice(0, maxLines).join("\n") + `\n... [truncated; ${lines.length - maxLines} more lines]`;
 }
 
 /**
- * 读取 memory 文件 + 解析 frontmatter。
- * 旧文件无 trust/source/timestamps 时**懒填**:trust=auto, source=manual-write,
- * created_at = file mtime ISO,updated_at = 同 created_at。**不写回磁盘** —
- * 下一次 writeMemory 触发时再持久化完整 frontmatter,避免读路径副作用。
+ * 读取单条 memory:scope 未指定时**先 project,fallback user**;name 在两层都存在
+ * 时 scope 显式可消歧。
+ *
+ * 旧文件无 trust/source/timestamps 时**懒填**(基于 file mtime),不写回磁盘。
  */
-export async function readMemory(cwd: string, name: string): Promise<MemoryFile> {
-  const filePath = memoryFilePath(cwd, name);
-  if (!existsSync(filePath)) {
-    throw new Error(`Memory "${name}" does not exist at ${filePath}.`);
+export async function readMemory(cwd: string, name: string, scope?: Scope): Promise<MemoryFile> {
+  const candidates: Scope[] = scope ? [scope] : ["project", "user"];
+  for (const s of candidates) {
+    const filePath = memoryFilePath(cwd, name, s);
+    if (!existsSync(filePath)) continue;
+    const raw = await readFile(filePath, "utf-8");
+    const { frontmatter, body } = parseMemoryFile(raw, name, filePath);
+    return { frontmatter, body, filePath, scope: s };
   }
-  const raw = await readFile(filePath, "utf-8");
-  const { frontmatter, body } = parseMemoryFile(raw, name, filePath);
-  return { frontmatter, body, filePath };
+  const where = scope ? `${scope} scope` : `project or user scope`;
+  throw new Error(`Memory "${name}" does not exist in ${where}.`);
 }
 
-/** 仅返回文件原文(含 frontmatter)。MemoryRead 工具用此让 LLM 看到 trust 等元数据。 */
-export async function readMemoryFile(cwd: string, name: string): Promise<string> {
-  const filePath = memoryFilePath(cwd, name);
-  if (!existsSync(filePath)) {
-    throw new Error(`Memory "${name}" does not exist at ${filePath}.`);
-  }
-  return readFile(filePath, "utf-8");
+/** 仅返回文件原文(含 frontmatter)。MemoryRead 工具用此让 LLM 看到 trust + scope。 */
+export async function readMemoryFile(cwd: string, name: string, scope?: Scope): Promise<string> {
+  const file = await readMemory(cwd, name, scope);
+  return readFile(file.filePath, "utf-8");
 }
+
+// ============================== 写入 ==============================
 
 export interface WriteMemoryOpts {
   name: string;
@@ -129,6 +161,8 @@ export interface WriteMemoryOpts {
   trust?: TrustLevel;
   /** 默认 "manual-write"。 */
   source?: MemorySource;
+  /** 默认 "project"。LLM 自行判断 / /remember 命令显式覆盖。 */
+  scope?: Scope;
 }
 
 export interface WriteMemoryResult {
@@ -136,22 +170,26 @@ export interface WriteMemoryResult {
   indexUpdated: boolean;
   /** 新建文件 = true;更新已有 = false。 */
   created: boolean;
+  /** 写入的实际 scope(便于 caller 提示)。 */
+  scope: Scope;
 }
 
 /**
- * 写一条 memory + 更新 MEMORY.md 索引。
+ * 写一条 memory + 更新对应 scope 的 MEMORY.md 索引。
  *
  * 行为:
  *   - 新建:落 frontmatter + body,created_at = updated_at = now
- *   - 已存在:**保留**原 created_at,刷新 updated_at;trust 走升级语义(不能从
- *     verified 自动降回 auto;trusted 永久不变)
+ *   - 已存在(同 scope):**保留**原 created_at,刷新 updated_at;trust 走升级语义
+ *     (不能从 verified 自动降回 auto;trusted 永久不变)
+ *   - 跨 scope 同名:两层独立存储,各自独立 frontmatter
  *   - 索引:替换或追加 `[trust] - [name](name.md) — description` 行
  */
 export async function writeMemory(cwd: string, opts: WriteMemoryOpts): Promise<WriteMemoryResult> {
-  const dir = memoryDir(cwd);
+  const scope = opts.scope ?? "project";
+  const dir = scopeDir(cwd, scope);
   await mkdir(dir, { recursive: true });
 
-  const filePath = memoryFilePath(cwd, opts.name);
+  const filePath = memoryFilePath(cwd, opts.name, scope);
   const now = new Date().toISOString();
   const reqTrust: TrustLevel = opts.trust ?? "auto";
   const reqSource = opts.source ?? "manual-write";
@@ -162,18 +200,15 @@ export async function writeMemory(cwd: string, opts: WriteMemoryOpts): Promise<W
   const isCreating = !existsSync(filePath);
 
   if (!isCreating) {
-    // 读已有 frontmatter,保留 created_at,trust 走"只升不降"
     try {
       const raw = await readFile(filePath, "utf-8");
       const existing = parseMemoryFile(raw, opts.name, filePath).frontmatter;
       createdAt = existing.created_at;
-      // 升级语义:max(req, existing);trusted 不会被 auto/verified 覆盖
       if (trustRank(existing.trust) > trustRank(reqTrust)) {
         finalTrust = existing.trust;
         finalSource = existing.source;
       }
     } catch {
-      // 解析失败 → 当新建处理(原文件可能损坏,覆盖修复)
       createdAt = now;
     }
   }
@@ -191,25 +226,27 @@ export async function writeMemory(cwd: string, opts: WriteMemoryOpts): Promise<W
   const content = serializeMemoryFile(fm, opts.body);
   await writeFile(filePath, content, "utf-8");
 
-  const indexUpdated = await upsertIndexLine(cwd, fm);
-  return { filePath, indexUpdated, created: isCreating };
+  const indexUpdated = await upsertIndexLine(cwd, scope, fm);
+  return { filePath, indexUpdated, created: isCreating, scope };
 }
 
 /**
- * 改 trust 但不动 body / description。用于:
+ * 改 trust 但不动 body / description(同 scope 内)。用于:
  *   - /memory edit 退出后自动升 verified
- *   - /memory promote(auto → verified;verified → trusted 仅 hierarchy 允许)
+ *   - /memory promote(auto → verified)
  *   - /memory trust <verified|auto> 显式改
  *
  * 只升不降语义:trustRank(new) >= trustRank(old);否则报错。
+ * scope 未指定 → 走 readMemory 自动定位规则。
  */
 export async function setMemoryTrust(
   cwd: string,
   name: string,
   trust: TrustLevel,
   source: MemorySource = "user-edit",
+  scope?: Scope,
 ): Promise<void> {
-  const file = await readMemory(cwd, name);
+  const file = await readMemory(cwd, name, scope);
   if (trustRank(trust) < trustRank(file.frontmatter.trust)) {
     throw new Error(
       `Cannot lower trust: "${name}" is currently ${file.frontmatter.trust}; ${trust} would be a downgrade.`,
@@ -226,36 +263,103 @@ export async function setMemoryTrust(
   };
   const content = serializeMemoryFile(fm, file.body);
   await writeFile(file.filePath, content, "utf-8");
-  await upsertIndexLine(cwd, fm);
+  await upsertIndexLine(cwd, file.scope, fm);
 }
 
-/** 删除单条 memory + 从索引移除。 */
-export async function deleteMemory(cwd: string, name: string): Promise<void> {
-  const filePath = memoryFilePath(cwd, name);
+/** 删除单条 memory + 从对应 scope 索引移除。scope 未指定 → 自动定位。 */
+export async function deleteMemory(cwd: string, name: string, scope?: Scope): Promise<Scope> {
+  // 先确定 actual scope
+  let actualScope: Scope | undefined = scope;
+  if (!actualScope) {
+    for (const s of SCOPES) {
+      if (existsSync(memoryFilePath(cwd, name, s))) {
+        actualScope = s;
+        break;
+      }
+    }
+  }
+  if (!actualScope) {
+    throw new Error(`Memory "${name}" does not exist in any scope.`);
+  }
+  const filePath = memoryFilePath(cwd, name, actualScope);
   if (existsSync(filePath)) await unlink(filePath);
-  await removeIndexLine(cwd, name);
+  await removeIndexLine(cwd, actualScope, name);
+  return actualScope;
 }
 
-/** 列出 memory/ 目录下所有 .md(MEMORY.md 除外),按 trust → updated_at 降序排。 */
-export async function listMemories(cwd: string): Promise<MemoryFile[]> {
-  const dir = memoryDir(cwd);
-  if (!existsSync(dir)) return [];
-  const entries = await readdir(dir);
+/**
+ * 把 project scope 的 memory 提升到 user scope(II-3 promote-scope)。
+ * 行为:
+ *   1. 从 project 读 → 写入 user(保留 created_at;source 改 promote-scope)
+ *   2. 删除 project 下的原文件 + 索引行
+ *   3. 失败任一步骤抛错(原子性:写 user 失败时不删 project)
+ *
+ * 已在 user scope:noop 返回 false。
+ */
+export async function promoteScopeToUser(cwd: string, name: string): Promise<boolean> {
+  const projectPath = memoryFilePath(cwd, name, "project");
+  const userPath = memoryFilePath(cwd, name, "user");
+  if (!existsSync(projectPath)) {
+    if (existsSync(userPath)) return false; // 已经在 user scope
+    throw new Error(`Memory "${name}" does not exist in project scope.`);
+  }
+  if (existsSync(userPath)) {
+    throw new Error(`Memory "${name}" already exists in user scope. Delete one of them first.`);
+  }
+  const file = await readMemory(cwd, name, "project");
+  await writeMemory(cwd, {
+    name: file.frontmatter.name,
+    description: file.frontmatter.description,
+    type: file.frontmatter.type,
+    body: file.body,
+    trust: file.frontmatter.trust,
+    source: "promote-scope",
+    scope: "user",
+  });
+  await deleteMemory(cwd, name, "project");
+  return true;
+}
+
+// ============================== 列表 ==============================
+
+export interface ListMemoriesOpts {
+  /** "project" | "user" | "all"(默认)。 */
+  scope?: Scope | "all";
+}
+
+/** 列出 memory(按 trust → updated_at 降序;all 时合并两层)。 */
+export async function listMemories(cwd: string, opts: ListMemoriesOpts = {}): Promise<MemoryFile[]> {
+  const scope = opts.scope ?? "all";
+  const targets: Scope[] = scope === "all" ? ["project", "user"] : [scope];
   const files: MemoryFile[] = [];
-  for (const entry of entries) {
-    if (!entry.endsWith(".md")) continue;
-    if (entry === "MEMORY.md") continue;
-    const name = entry.replace(/\.md$/, "");
+  for (const s of targets) {
+    const dir = scopeDir(cwd, s);
+    if (!existsSync(dir)) continue;
+    let entries: string[];
     try {
-      files.push(await readMemory(cwd, name));
+      entries = await readdir(dir);
     } catch {
-      // 单条解析失败不影响 list
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith(".md")) continue;
+      if (entry === "MEMORY.md") continue;
+      const name = entry.replace(/\.md$/, "");
+      try {
+        files.push(await readMemory(cwd, name, s));
+      } catch {
+        // skip 损坏文件
+      }
     }
   }
   files.sort((a, b) => {
+    // 优先 trust,再 updated_at,scope 仅做最后 tie-break(project 在前)
     const t = trustRank(b.frontmatter.trust) - trustRank(a.frontmatter.trust);
     if (t !== 0) return t;
-    return b.frontmatter.updated_at.localeCompare(a.frontmatter.updated_at);
+    const u = b.frontmatter.updated_at.localeCompare(a.frontmatter.updated_at);
+    if (u !== 0) return u;
+    if (a.scope === b.scope) return 0;
+    return a.scope === "project" ? -1 : 1;
   });
   return files;
 }
@@ -269,11 +373,8 @@ const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/;
  *   name / description    顶层 key: value
  *   metadata:             嵌套块,缩进的 key: value
  *
- * 不支持通用 YAML(嵌套 list / 多行字符串等)— 因为 muse memory 写入是固定模板,
- * 不会出现复杂结构。容错:未知字段保留为 unknown 但不丢失。
- *
- * 缺失字段懒填(基于 file mtime / 默认值):trust=auto, source=manual-write,
- * created_at = file.mtime ISO, updated_at = created_at, type = "user"(兜底).
+ * 缺失字段懒填:trust=auto, source=manual-write, created_at = file.mtime,
+ * updated_at = created_at, type = "user"(兜底)。
  */
 function parseMemoryFile(
   raw: string,
@@ -282,7 +383,6 @@ function parseMemoryFile(
 ): { frontmatter: MemoryFrontmatter; body: string } {
   const m = raw.match(FRONTMATTER_RE);
   if (!m) {
-    // 无 frontmatter — 全文当 body,frontmatter 全懒填
     return {
       frontmatter: lazyDefaults(fallbackName, "", filePath),
       body: raw.trim(),
@@ -312,9 +412,7 @@ function parseMemoryFile(
       if (kv.key === "name") name = kv.value;
       else if (kv.key === "description") description = kv.value;
     } else {
-      // metadata 子项必须有缩进
       if (!line.match(/^\s+\S/)) {
-        // 退出 metadata 块
         inMetadata = false;
         continue;
       }
@@ -340,7 +438,6 @@ function parseMemoryFile(
     }
   }
 
-  // 懒填缺失字段
   if (!createdAt || !updatedAt) {
     const mtimeIso = safeFileMtime(filePath);
     if (!createdAt) createdAt = mtimeIso;
@@ -358,7 +455,6 @@ function parseKV(line: string): { key: string; value: string } | null {
   if (!m) return null;
   const key = m[1];
   let value = m[2];
-  // 去外层引号(若有)
   if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
     value = value.slice(1, -1);
   }
@@ -414,7 +510,6 @@ function serializeMemoryFile(fm: MemoryFrontmatter, body: string): string {
 }
 
 function escapeYamlValue(v: string): string {
-  // 含 `:` 或行首特殊字符的值用双引号;其他原样
   if (/[:#&*?{}[\]|>!%@`]/.test(v) || v.startsWith(" ") || v.endsWith(" ")) {
     return `"${v.replace(/"/g, '\\"')}"`;
   }
@@ -425,18 +520,16 @@ function escapeYamlValue(v: string): string {
 
 const INDEX_LINE_RE = /^\[(trusted|verified|auto)\]\s+-\s+\[([a-zA-Z0-9-_]+)\]\(([^)]+)\)\s+—\s+(.*)$/;
 
-/** 索引一行格式:`[trust] - [name](name.md) — description`。 */
 function formatIndexLine(fm: MemoryFrontmatter): string {
   return `[${fm.trust}] - [${fm.name}](${fm.name}.md) — ${fm.description}`;
 }
 
-async function upsertIndexLine(cwd: string, fm: MemoryFrontmatter): Promise<boolean> {
-  const indexPath = memoryIndexPath(cwd);
+async function upsertIndexLine(cwd: string, scope: Scope, fm: MemoryFrontmatter): Promise<boolean> {
+  const indexPath = memoryIndexPath(cwd, scope);
   let index = existsSync(indexPath) ? await readFile(indexPath, "utf-8") : "";
   const lines = index ? index.split("\n") : [];
   const newLine = formatIndexLine(fm);
 
-  // 找已有(按 name 匹配,无论 trust 是否变)— 旧格式 `- [name](...)` 也能命中
   const existingIdx = lines.findIndex((l) => {
     const m = l.match(INDEX_LINE_RE);
     if (m) return m[2] === fm.name;
@@ -455,13 +548,14 @@ async function upsertIndexLine(cwd: string, fm: MemoryFrontmatter): Promise<bool
   }
   if (changed) {
     const out = lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+    await mkdir(scopeDir(cwd, scope), { recursive: true });
     await writeFile(indexPath, out, "utf-8");
   }
   return changed;
 }
 
-async function removeIndexLine(cwd: string, name: string): Promise<void> {
-  const indexPath = memoryIndexPath(cwd);
+async function removeIndexLine(cwd: string, scope: Scope, name: string): Promise<void> {
+  const indexPath = memoryIndexPath(cwd, scope);
   if (!existsSync(indexPath)) return;
   const raw = await readFile(indexPath, "utf-8");
   const lines = raw.split("\n");

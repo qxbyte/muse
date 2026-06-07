@@ -33,6 +33,7 @@ import { createRequestCtx, BudgetExceededError } from "../preprocess/request/ind
 import { countMessages } from "../preprocess/tokenize.js";
 import { compactMessages } from "./context.js";
 import { findProjectRoot, loadSubdirMemory } from "./hierarchy.js";
+import { upsertMemoryEntry, removeMemoryEntry } from "./memory-index.js";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ResultCtx, ResultPreprocessSettings } from "../preprocess/result/index.js";
@@ -475,6 +476,17 @@ export class Agent {
               cwd: this.ctx.cwd,
             });
             this.messages = result.newMessages;
+            // II-5 联动:把成功 promote 的 facts upsert 到 in-memory 向量索引(session 内立即可召回)
+            if (result.promotedFacts && this.ctx.requestServices?.memoryEmbeddingIndex) {
+              for (const f of result.promotedFacts) {
+                if (f.status !== "saved") continue;
+                try {
+                  await upsertMemoryEntry(this.ctx.requestServices.memoryEmbeddingIndex, f.name, "project");
+                } catch (err) {
+                  log.warn("memory index upsert (compact-promote) failed", { name: f.name, msg: (err as Error).message });
+                }
+              }
+            }
             return this.messages;
           },
         },
@@ -698,6 +710,24 @@ export class Agent {
         log.warn("PostToolUse hook tried to block, ignored", { reason: err.reason });
       } else {
         throw err;
+      }
+    }
+
+    // II-5:MemoryWrite 完成后,如果当前 session 有 memoryEmbeddingIndex,
+    // 触发增量 upsert 让本轮新 memory 立即可召回(避免要等下次 muse 启动)
+    if (input.toolName === "MemoryWrite" && !isError) {
+      const index = this.ctx.requestServices?.memoryEmbeddingIndex;
+      if (index) {
+        try {
+          const args = input.args as { name?: string; scope?: string } | null | undefined;
+          const name = typeof args?.name === "string" ? args.name : undefined;
+          const scope = args?.scope === "user" ? "user" : "project";
+          if (name) {
+            await upsertMemoryEntry(index, name, scope);
+          }
+        } catch (err) {
+          log.warn("memory index upsert failed", { msg: (err as Error).message });
+        }
       }
     }
 

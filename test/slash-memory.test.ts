@@ -54,7 +54,7 @@ describe("II-3 /memory slash", () => {
 
   it("/memory(无参)= list 空场景显示帮助 + 0 条", async () => {
     const result = await memoryCmd.execute(mkCtx(""));
-    expect(result.display).toContain("(no memories saved for this project)");
+    expect(result.display).toContain("(no memories saved");
     expect(result.display).toContain("Usage:");
   });
 
@@ -73,7 +73,7 @@ describe("II-3 /memory slash", () => {
 
     const result = await memoryCmd.execute(mkCtx("list"));
     const text = result.display!;
-    expect(text).toContain("Memories for this project (3)");
+    expect(text).toContain("3 total");
     // b-verified 应出现在 c-auto 和 a-auto 之前
     const idxB = text.indexOf("b-verified");
     const idxC = text.indexOf("c-auto");

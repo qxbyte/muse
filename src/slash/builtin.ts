@@ -21,10 +21,16 @@ import {
   readMemory,
   deleteMemory,
   setMemoryTrust,
+  promoteScopeToUser,
+  writeMemory,
   TRUST_LEVELS,
+  SCOPES,
   type TrustLevel,
+  type Scope,
+  type MemoryType,
 } from "../loop/memory.js";
 import { buildMemoryIndex, queryMemoryIndex } from "../loop/memory-index.js";
+import type { LLMClient } from "../llm/types.js";
 
 // ----- /help -----
 
@@ -489,41 +495,76 @@ const BTW: SlashCommand = {
 
 const MEMORY_HELP = [
   `Usage:`,
-  `  /memory                       list all memories (default)`,
-  `  /memory list                  same as above`,
-  `  /memory view <name>           show full content + frontmatter`,
-  `  /memory delete <name>         remove permanently`,
-  `  /memory promote <name>        auto → verified`,
-  `  /memory trust <name> <level>  set trust (verified | auto;`,
-  `                                 trusted is reserved for MUSE.md / AGENTS.md)`,
-  `  /memory search <query>        vector-based semantic search (II-5)`,
+  `  /memory                              list all memories (default; both scopes)`,
+  `  /memory list [--scope <s>]           list (s = project | user | all)`,
+  `  /memory view <name> [--scope <s>]    show full content + frontmatter`,
+  `  /memory delete <name> [--scope <s>]  remove permanently`,
+  `  /memory promote <name>               auto → verified`,
+  `  /memory promote-scope <name>         project → user (lift to global scope)`,
+  `  /memory trust <name> <level>         set trust (verified | auto;`,
+  `                                       trusted reserved for MUSE.md / AGENTS.md)`,
+  `  /memory search <query>               vector-based semantic search (II-5)`,
+  ``,
+  `Scopes:`,
+  `  [project]  per-project memory: ~/.muse/projects/<hash>/memory/`,
+  `  [user]     global cross-project memory: ~/.muse/memory/`,
+  `  Both are merged at recall time; project ranks higher when scores tie.`,
 ].join("\n");
+
+/** 解析 --scope=<value> 或 --scope <value> 标志。返回 scope + 剩余 args 列表。 */
+function parseScopeFlag(parts: string[]): { scope?: Scope | "all"; rest: string[] } {
+  const rest: string[] = [];
+  let scope: Scope | "all" | undefined;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p === "--scope" && i + 1 < parts.length) {
+      const v = parts[i + 1];
+      if (v === "all" || (SCOPES as readonly string[]).includes(v)) {
+        scope = v as Scope | "all";
+        i++;
+        continue;
+      }
+    } else if (p.startsWith("--scope=")) {
+      const v = p.slice("--scope=".length);
+      if (v === "all" || (SCOPES as readonly string[]).includes(v)) {
+        scope = v as Scope | "all";
+        continue;
+      }
+    }
+    rest.push(p);
+  }
+  return { scope, rest };
+}
 
 const MEMORY: SlashCommand = {
   name: "memory",
-  description: "manage long-term memory (list / view / delete / promote / trust)",
-  argsHint: "[list | view <name> | delete <name> | promote <name> | trust <name> <level>]",
+  description: "manage long-term memory (list / view / delete / promote / promote-scope / trust / search)",
+  argsHint: "[list | view <name> | delete <name> | promote <name> | promote-scope <name> | trust <name> <level> | search <query>] [--scope project|user|all]",
   async execute(ctx) {
     const args = ctx.args.trim();
-    const parts = args.length ? args.split(/\s+/) : [];
+    const allParts = args.length ? args.split(/\s+/) : [];
+    const { scope, rest: parts } = parseScopeFlag(allParts);
     const sub = parts[0] ?? "list";
     try {
       switch (sub) {
         case "list":
-          return await memoryList(ctx.cwd);
+          return await memoryList(ctx.cwd, scope ?? "all");
         case "view":
-          if (!parts[1]) return { display: `Usage: /memory view <name>` };
-          return await memoryView(ctx.cwd, parts[1]);
+          if (!parts[1]) return { display: `Usage: /memory view <name> [--scope project|user]` };
+          return await memoryView(ctx.cwd, parts[1], scope === "all" ? undefined : scope);
         case "delete":
         case "rm":
-          if (!parts[1]) return { display: `Usage: /memory delete <name>` };
-          return await memoryDelete(ctx.cwd, parts[1]);
+          if (!parts[1]) return { display: `Usage: /memory delete <name> [--scope project|user]` };
+          return await memoryDelete(ctx.cwd, parts[1], scope === "all" ? undefined : scope);
         case "promote":
           if (!parts[1]) return { display: `Usage: /memory promote <name>` };
-          return await memoryPromote(ctx.cwd, parts[1]);
+          return await memoryPromote(ctx.cwd, parts[1], scope === "all" ? undefined : scope);
+        case "promote-scope":
+          if (!parts[1]) return { display: `Usage: /memory promote-scope <name>  (project → user)` };
+          return await memoryPromoteScope(ctx.cwd, parts[1]);
         case "trust":
-          if (!parts[1] || !parts[2]) return { display: `Usage: /memory trust <name> <verified|auto>` };
-          return await memoryAssignTrust(ctx.cwd, parts[1], parts[2]);
+          if (!parts[1] || !parts[2]) return { display: `Usage: /memory trust <name> <verified|auto> [--scope project|user]` };
+          return await memoryAssignTrust(ctx.cwd, parts[1], parts[2], scope === "all" ? undefined : scope);
         case "search": {
           const query = parts.slice(1).join(" ");
           if (!query) return { display: `Usage: /memory search <query>` };
@@ -541,27 +582,30 @@ const MEMORY: SlashCommand = {
   },
 };
 
-async function memoryList(cwd: string) {
-  const list = await listMemories(cwd);
+async function memoryList(cwd: string, scope: Scope | "all") {
+  const list = await listMemories(cwd, { scope });
   if (list.length === 0) {
-    return { display: "(no memories saved for this project)\n\n" + MEMORY_HELP };
+    const where = scope === "all" ? "either scope" : `scope=${scope}`;
+    return { display: `(no memories saved in ${where})\n\n${MEMORY_HELP}` };
   }
   const lines = list.map((m) => {
     const trustTag = `[${m.frontmatter.trust}]`.padEnd(11);
+    const scopeTag = `[${m.scope}]`.padEnd(10);
     const typeTag = `(${m.frontmatter.type})`.padEnd(12);
-    return `  ${trustTag} ${typeTag} ${m.frontmatter.name}  — ${m.frontmatter.description}`;
+    return `  ${trustTag} ${scopeTag} ${typeTag} ${m.frontmatter.name}  — ${m.frontmatter.description}`;
   });
+  const scopeNote = scope === "all" ? "(both scopes merged)" : `(scope=${scope})`;
   return {
-    display: `Memories for this project (${list.length}):\n\n${lines.join("\n")}\n\n${MEMORY_HELP}`,
+    display: `Memories ${scopeNote} — ${list.length} total:\n\n${lines.join("\n")}\n\n${MEMORY_HELP}`,
   };
 }
 
-async function memoryView(cwd: string, name: string) {
-  const file = await readMemory(cwd, name);
+async function memoryView(cwd: string, name: string, scope?: Scope) {
+  const file = await readMemory(cwd, name, scope);
   const fm = file.frontmatter;
   return {
     display:
-      `${name}\n` +
+      `${name}  (scope: ${file.scope})\n` +
       `  trust:       ${fm.trust}\n` +
       `  type:        ${fm.type}\n` +
       `  source:      ${fm.source}\n` +
@@ -572,23 +616,34 @@ async function memoryView(cwd: string, name: string) {
   };
 }
 
-async function memoryDelete(cwd: string, name: string) {
-  // 先验证存在性,避免静默无效操作
-  await readMemory(cwd, name);
-  await deleteMemory(cwd, name);
-  return { display: `Deleted memory "${name}".` };
+async function memoryDelete(cwd: string, name: string, scope?: Scope) {
+  // 先验证存在性,避免静默无效操作;返回的 actualScope 用作提示
+  const file = await readMemory(cwd, name, scope);
+  const removed = await deleteMemory(cwd, name, file.scope);
+  return { display: `Deleted memory "${name}" (scope=${removed}).` };
 }
 
-async function memoryPromote(cwd: string, name: string) {
-  const before = await readMemory(cwd, name);
+async function memoryPromote(cwd: string, name: string, scope?: Scope) {
+  const before = await readMemory(cwd, name, scope);
   if (before.frontmatter.trust === "trusted") {
-    return { display: `"${name}" is already trusted (hierarchy-sourced).` };
+    return { display: `"${name}" (scope=${before.scope}) is already trusted (hierarchy-sourced).` };
   }
   if (before.frontmatter.trust === "verified") {
-    return { display: `"${name}" is already verified. Trusted is reserved for MUSE.md / AGENTS.md.` };
+    return { display: `"${name}" (scope=${before.scope}) is already verified. Trusted is reserved for MUSE.md / AGENTS.md.` };
   }
-  await setMemoryTrust(cwd, name, "verified", "user-edit");
-  return { display: `Promoted "${name}": auto → verified.` };
+  await setMemoryTrust(cwd, name, "verified", "user-edit", before.scope);
+  return { display: `Promoted "${name}" (scope=${before.scope}): auto → verified.` };
+}
+
+async function memoryPromoteScope(cwd: string, name: string) {
+  const promoted = await promoteScopeToUser(cwd, name);
+  if (!promoted) return { display: `"${name}" is already in user scope; nothing to promote.` };
+  return {
+    display:
+      `Promoted "${name}" scope: project → user.\n` +
+      `It is now visible across ALL projects on this machine.\n` +
+      `(source set to "promote-scope"; trust preserved.)`,
+  };
 }
 
 async function memorySearch(cwd: string, query: string) {
@@ -603,7 +658,7 @@ async function memorySearch(cwd: string, query: string) {
   const lines = results.map((r, i) => {
     const score = (r.score * 100).toFixed(1);
     const w = r.weighted.toFixed(3);
-    return `  ${i + 1}. [${r.entry.trust}] (${r.entry.type}) ${r.entry.name}   score=${score}% w=${w}\n     — ${r.entry.description}`;
+    return `  ${i + 1}. [${r.entry.trust}] [${r.entry.scope}] (${r.entry.type}) ${r.entry.name}   score=${score}% w=${w}\n     — ${r.entry.description}`;
   });
   return {
     display:
@@ -613,7 +668,7 @@ async function memorySearch(cwd: string, query: string) {
   };
 }
 
-async function memoryAssignTrust(cwd: string, name: string, levelArg: string) {
+async function memoryAssignTrust(cwd: string, name: string, levelArg: string, scope?: Scope) {
   if (!(TRUST_LEVELS as readonly string[]).includes(levelArg)) {
     return { display: `Invalid trust level: ${levelArg}. Use one of: ${TRUST_LEVELS.join(" / ")}.` };
   }
@@ -624,8 +679,148 @@ async function memoryAssignTrust(cwd: string, name: string, levelArg: string) {
         `(MUSE.md / AGENTS.md). To make this content trusted, move it into one of those files.`,
     };
   }
-  await setMemoryTrust(cwd, name, levelArg as TrustLevel, "user-edit");
-  return { display: `Set "${name}" trust → ${levelArg}.` };
+  await setMemoryTrust(cwd, name, levelArg as TrustLevel, "user-edit", scope);
+  return { display: `Set "${name}" trust → ${levelArg}${scope ? ` (scope=${scope})` : ""}.` };
+}
+
+// ----- /remember -----
+
+const REMEMBER_TIPS = [
+  "Default scope is user (cross-project)",
+  "Use --project to save only to current project",
+  "trust=verified because YOU asked muse to remember",
+  "Edit later via /memory view <name> or shell",
+];
+
+const REMEMBER: SlashCommand = {
+  name: "remember",
+  description: "save a memory from user-described text (LLM distills structure); default scope=user",
+  argsHint: "[--user|--project] <text>",
+  async execute(ctx) {
+    const raw = ctx.args.trim();
+    if (!raw) {
+      return {
+        display:
+          `Usage: /remember [--user|--project] <text>\n` +
+          `  Default scope is "user" (cross-project; saved to ~/.muse/memory/).\n` +
+          `  Use --project to scope to current project only.\n` +
+          `  muse will call the active LLM to extract { name, type, description, body }, ` +
+          `then save with trust=verified, source=user-remember.`,
+      };
+    }
+    // 解析 scope flag(必须在最前)
+    let scope: Scope = "user";
+    let text = raw;
+    if (text.startsWith("--user")) {
+      scope = "user";
+      text = text.slice("--user".length).trim();
+    } else if (text.startsWith("--project")) {
+      scope = "project";
+      text = text.slice("--project".length).trim();
+    }
+    if (!text) return { display: "Usage: /remember [--user|--project] <text>" };
+
+    ctx.actions.showProgress({
+      title: `Distilling memory (scope=${scope})`,
+      tips: REMEMBER_TIPS,
+    });
+    try {
+      const extracted = await distillMemoryStructure(ctx.llm, text, scope);
+      if (!extracted) {
+        return {
+          display:
+            `Failed to extract structured memory from your text.\n` +
+            `Try a clearer statement, e.g.:\n` +
+            `  /remember I prefer pnpm over npm in all projects\n` +
+            `  /remember --project this team uses semantic-release for versioning`,
+        };
+      }
+      const result = await writeMemory(ctx.cwd, {
+        name: extracted.name,
+        description: extracted.description,
+        type: extracted.type,
+        body: extracted.body,
+        trust: "verified",
+        source: "user-remember",
+        scope,
+      });
+      const action = result.created ? "Created" : "Updated";
+      return {
+        display:
+          `${action} memory "${extracted.name}"\n` +
+          `  scope:       ${result.scope}\n` +
+          `  type:        ${extracted.type}\n` +
+          `  trust:       verified (source: user-remember)\n` +
+          `  description: ${extracted.description}\n` +
+          `  → ${result.filePath}`,
+      };
+    } finally {
+      ctx.actions.hideProgress();
+    }
+  },
+};
+
+interface ExtractedMemory {
+  name: string;
+  type: MemoryType;
+  description: string;
+  body: string;
+}
+
+async function distillMemoryStructure(
+  llm: LLMClient,
+  userText: string,
+  scope: Scope,
+): Promise<ExtractedMemory | null> {
+  const scopeNote =
+    scope === "user"
+      ? "user-level (cross-project preference / role / style)"
+      : "project-level (specific to the current project)";
+  const prompt =
+    `User wants to save a long-term memory. Extract structured fields.\n\n` +
+    `Target scope: ${scope} — ${scopeNote}\n\n` +
+    `User said:\n"""\n${userText}\n"""\n\n` +
+    `Reply with ONE json code block in this exact shape:\n\n` +
+    "```json\n" +
+    `{\n` +
+    `  "name": "kebab-case-slug",\n` +
+    `  "type": "user" | "feedback" | "project" | "reference",\n` +
+    `  "description": "one-line summary, ≤ 80 chars",\n` +
+    `  "body": "markdown body"\n` +
+    `}\n` +
+    "```\n\n" +
+    `Field rules:\n` +
+    `- name: kebab- or snake-style slug, ≤ 40 chars, captures the topic\n` +
+    `- type: user(role/prefs) | feedback(validated practice) | project(decisions/facts) | reference(URL/path pointers)\n` +
+    `- description: short hook used in MEMORY.md index\n` +
+    `- body: markdown; for feedback/project, structure as: rule line + "Why: ..." + "How to apply: ..."\n\n` +
+    `Output ONLY the json block. No prose before or after.`;
+
+  let text = "";
+  try {
+    for await (const ev of llm.stream({ messages: [{ role: "user", content: prompt }] })) {
+      if (ev.type === "text") text += ev.delta;
+      else if (ev.type === "error") throw ev.error;
+    }
+  } catch {
+    return null;
+  }
+
+  const m = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+  if (!m) return null;
+  try {
+    const parsed = JSON.parse(m[1].trim());
+    const name = typeof parsed.name === "string" ? parsed.name : "";
+    const description = typeof parsed.description === "string" ? parsed.description : "";
+    const body = typeof parsed.body === "string" ? parsed.body : "";
+    const type = parsed.type;
+    if (!name || !description || !body) return null;
+    if (!/^[a-z0-9][a-z0-9-_]*$/i.test(name)) return null;
+    if (type !== "user" && type !== "feedback" && type !== "project" && type !== "reference") return null;
+    return { name, type, description, body };
+  } catch {
+    return null;
+  }
 }
 
 // ----- registry -----
@@ -638,6 +833,7 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   CONFIG,
   MCP,
   MEMORY,
+  REMEMBER,
   MODE_CMD,
   COST,
   BTW,
