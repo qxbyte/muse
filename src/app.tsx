@@ -38,6 +38,7 @@ import { Session, type SessionSummary } from "./session/jsonl.js";
 import { Agent } from "./loop/agent.js";
 import { loadMemoryIndex } from "./loop/memory.js";
 import { loadHierarchy, type HierarchyLayer } from "./loop/hierarchy.js";
+import { buildMemoryIndex, type MemoryIndex } from "./loop/memory-index.js";
 import { TodoStore } from "./loop/todos.js";
 import { InputPipeline, createInputCtx, buildUserMessage, type InputCtx } from "./preprocess/input/index.js";
 import { RequestPipeline } from "./preprocess/request/index.js";
@@ -480,6 +481,28 @@ export function App({
     };
   }, [cwd]);
 
+  // II-5:memory embedding index(启用时启动 + cwd / settings 变化时重建,失败降级)
+  const [memoryEmbeddingIndex, setMemoryEmbeddingIndex] = useState<MemoryIndex | undefined>(undefined);
+  const embeddingEnabled = settings.memory?.embedding?.enabled === true;
+  const embeddingProviderKind = settings.memory?.embedding?.provider;
+  useEffect(() => {
+    if (!embeddingEnabled) {
+      setMemoryEmbeddingIndex(undefined);
+      return;
+    }
+    let cancelled = false;
+    buildMemoryIndex(cwd, { config: settings.memory?.embedding })
+      .then((idx) => {
+        if (!cancelled) setMemoryEmbeddingIndex(idx);
+      })
+      .catch(() => {
+        if (!cancelled) setMemoryEmbeddingIndex(undefined);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cwd, embeddingEnabled, embeddingProviderKind, settings.memory?.embedding?.model]);
+
   // SessionStart / SessionEnd hooks
   const [sessionExtraPrompt, setSessionExtraPrompt] = useState<string>("");
   const turnCountRef = useRef<number>(0);
@@ -532,6 +555,9 @@ export function App({
         todos,
         memoryIndex,
         hierarchy,
+        memoryEmbeddingIndex,
+        memoryEmbeddingTopK: settings.memory?.embedding?.topK,
+        memoryEmbeddingMinCount: settings.memory?.embedding?.minMemoryCount,
         toolRegistry: tools,
         lang,
         provider: llm.providerName,
@@ -618,7 +644,7 @@ export function App({
     });
     agent.setMessages(messagesRef.current);
     agentRef.current = agent;
-  }, [llm, tools, permissions, session, cwd, lang, memoryIndex, hierarchy, sessionExtraPrompt]);
+  }, [llm, tools, permissions, session, cwd, lang, memoryIndex, hierarchy, memoryEmbeddingIndex, sessionExtraPrompt]);
 
   // 键盘：Ctrl+C 全局退出 + Shift+Tab 循环切 permission mode + autocomplete ↑↓ Tab Esc 导航
   useInput(

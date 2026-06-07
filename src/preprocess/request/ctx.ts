@@ -9,6 +9,7 @@ import type { PermissionMode } from "../../permission/index.js";
 import type { TodoStore } from "../../loop/todos.js";
 import type { ToolRegistry } from "../../tools/registry.js";
 import type { HierarchyLayer } from "../../loop/hierarchy.js";
+import type { MemoryIndex } from "../../loop/memory-index.js";
 
 export interface RequestPreprocessSettings {
   trimHistory?: { enabled?: boolean; budgetRatio?: number };
@@ -28,6 +29,12 @@ export interface RequestServices {
   memoryIndex: string;
   /** 已加载的 hierarchy(MUSE.md / AGENTS.md 5 层)。II-1 引入。 */
   hierarchy?: HierarchyLayer[];
+  /** 已构建的 memory 向量索引(II-5,settings.memory.embedding.enabled=true 时由 caller 注入)。 */
+  memoryEmbeddingIndex?: MemoryIndex;
+  /** memory.embedding.topK 配置;默认 5。 */
+  memoryEmbeddingTopK?: number;
+  /** memory.embedding.minMemoryCount;少于此值退化到全注入。默认 10。 */
+  memoryEmbeddingMinCount?: number;
   /** 工具注册中心,用于 toLLMDefinitions + tool 元数据。 */
   toolRegistry: ToolRegistry;
   /** 输出语言。 */

@@ -17,6 +17,7 @@ import { Agent } from "./loop/agent.js";
 import { TodoStore } from "./loop/todos.js";
 import { loadMemoryIndex } from "./loop/memory.js";
 import { loadHierarchy } from "./loop/hierarchy.js";
+import { buildMemoryIndex, type MemoryIndex } from "./loop/memory-index.js";
 import { InputPipeline, createInputCtx, buildUserMessage } from "./preprocess/input/index.js";
 import { RequestPipeline } from "./preprocess/request/index.js";
 import { ResultPipeline } from "./preprocess/result/index.js";
@@ -223,6 +224,17 @@ async function runOneShot(opts: {
 }): Promise<void> {
   const memoryIndex = await loadMemoryIndex(opts.cwd);
   const hierarchy = await loadHierarchy(opts.cwd);
+  // II-5:启用时构建 memory embedding index(失败降级到全文)
+  let memoryEmbeddingIndex: MemoryIndex | undefined;
+  if (opts.settings.memory?.embedding?.enabled) {
+    try {
+      memoryEmbeddingIndex = await buildMemoryIndex(opts.cwd, {
+        config: opts.settings.memory.embedding,
+      });
+    } catch (err) {
+      if (!opts.quiet) process.stderr.write(`[memory embedding] build failed: ${(err as Error).message}. Falling back to full-text mode.\n`);
+    }
+  }
   const sessionStartTime = Date.now();
 
   // SessionStart hook
@@ -297,6 +309,9 @@ async function runOneShot(opts: {
       todos,
       memoryIndex,
       hierarchy,
+      memoryEmbeddingIndex,
+      memoryEmbeddingTopK: opts.settings.memory?.embedding?.topK,
+      memoryEmbeddingMinCount: opts.settings.memory?.embedding?.minMemoryCount,
       toolRegistry: opts.tools,
       lang: opts.lang,
       provider: opts.llm.providerName,

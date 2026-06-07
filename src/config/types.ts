@@ -154,6 +154,10 @@ export const SettingsSchema = z.object({
       enabled: z.boolean().optional(),
       /** 后端 provider。本期支持 hash-bag(零依赖);local-minilm / openai 留下批。 */
       provider: z.enum(["hash-bag", "local-minilm", "openai"]).optional(),
+      /** 模型名(local-minilm / openai 用;hash-bag 忽略)。 */
+      model: z.string().optional(),
+      /** OpenAI API key(env var 或明文)。 */
+      apiKey: z.string().optional(),
       /** 检索 top-K(默认 5)。 */
       topK: z.number().int().positive().optional(),
       /** memory 数量低于此值时退化到全注入(默认 10)。 */
