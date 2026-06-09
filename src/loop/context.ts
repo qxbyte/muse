@@ -29,7 +29,8 @@ import {
   type ExtractedFact,
   type SummarySchema,
 } from "./prompts/summarize.js";
-import { writeMemory } from "./memory.js";
+import { writeMemory, memoryFilePath } from "./memory.js";
+import { existsSync } from "node:fs";
 
 export interface CompactOptions {
   llm: LLMClient;
@@ -42,11 +43,15 @@ export interface CompactOptions {
   hooks?: HooksConfig;
   /** I-2 schema 选择;默认 "9-section"。 */
   schema?: SummarySchema;
+  /** O3:9-section LLM 失败时自动用 6-section 重试一次(默认 true)。 */
+  fallbackOnFormatFail?: boolean;
   /** I-5 联动:本次 compact 触发的 cwd,用于 writeMemory 写到正确项目下。
    *  未提供时跳过 facts 提取(纯摘要模式)。 */
   cwd?: string;
   /** I-5:是否自动把 facts 写入 memory(默认 true)。 */
   promoteFactsToMemory?: boolean;
+  /** O4:source=compact-promote 写入前检查同名 memory 是否已存在(默认 true,跳过不覆盖)。 */
+  dedupPromotedFacts?: boolean;
 }
 
 export class CompactBlockedError extends Error {
@@ -71,8 +76,12 @@ export interface PromotedFact {
   name: string;
   type: ExtractedFact["type"];
   description: string;
-  /** 写入结果:"saved" / "blocked"(MemoryPromote hook 拒绝)/ "failed"(writeMemory 错)。 */
-  status: "saved" | "blocked" | "failed";
+  /** 写入结果:
+   *    "saved"   新写入
+   *    "skipped" O4 dedup:同名 memory 已存在,跳过(防 LLM 反复提取把 verified 打回 auto)
+   *    "blocked" MemoryPromote hook 拒绝
+   *    "failed"  writeMemory 异常 */
+  status: "saved" | "skipped" | "blocked" | "failed";
   reason?: string;
 }
 
@@ -110,26 +119,31 @@ export async function compactMessages(
   const older = messages.slice(0, cutoff);
   const recent = messages.slice(cutoff);
   const schema: SummarySchema = opts.schema ?? "9-section";
-  const rawSummary = await summarizeConversation(
-    older,
-    opts.llm,
-    schema,
-    opts.abortSignal,
-    opts.onProgress,
-  );
+
+  // O3:9-section 失败 → 6-section 降级重试一次(可由 fallbackOnFormatFail=false 关闭)。
+  // LLM 流偶发 / 网络抖动可吸收,仍失败再抛(由 budget-guard 包成 BudgetExceededError)。
+  const fallbackEnabled = opts.fallbackOnFormatFail !== false; // 默认 true
+  let rawSummary: string;
+  try {
+    rawSummary = await summarizeConversation(older, opts.llm, schema, opts.abortSignal, opts.onProgress);
+  } catch (err) {
+    if (fallbackEnabled && schema === "9-section" && !opts.abortSignal?.aborted) {
+      rawSummary = await summarizeConversation(older, opts.llm, "6-section", opts.abortSignal, opts.onProgress);
+    } else {
+      throw err;
+    }
+  }
 
   // I-2:剥 facts JSON 块,留人类可读摘要主体
   const summary = stripFactsBlock(rawSummary);
   const facts = opts.cwd ? extractFacts(rawSummary) : [];
 
-  const summaryMessage: Message = {
-    role: "user",
-    content:
-      `[Previous conversation summary]\n\n${summary}\n\n` +
-      `[End of summary. The conversation continues below.]`,
-  };
-
-  const newMessages: Message[] = [summaryMessage, ...recent];
+  // O6:summary message 是占位符;facts promote 完成后会重新构造文案(在末尾追加
+  // promote 结果摘要,让 UI 与 LLM 都能看到本次自动 compact 写入了哪些 memory)。
+  const newMessages: Message[] = [
+    { role: "user", content: renderSummaryBody(summary, undefined) },
+    ...recent,
+  ];
 
   // PostCompact hook(不阻断)
   try {
@@ -150,7 +164,17 @@ export async function compactMessages(
   let promotedFacts: PromotedFact[] | undefined;
   const shouldPromote = opts.promoteFactsToMemory !== false && opts.cwd && facts.length > 0;
   if (shouldPromote) {
-    promotedFacts = await promoteFactsToMemory(facts, opts.cwd!, opts.hooks);
+    const dedup = opts.dedupPromotedFacts !== false; // 默认 true
+    promotedFacts = await promoteFactsToMemory(facts, opts.cwd!, opts.hooks, dedup);
+  }
+
+  // O6:把 promote 结果摘要回写到 summary message 末尾,让用户在 history 中
+  // 立即看到本次自动 compact 写了哪些 memory(LLM 也能在下一轮看到 — 防它重复提取同名 fact)。
+  if (promotedFacts && promotedFacts.length > 0) {
+    newMessages[0] = {
+      role: "user",
+      content: renderSummaryBody(summary, promotedFacts),
+    };
   }
 
   return {
@@ -161,6 +185,23 @@ export async function compactMessages(
     noop: false,
     promotedFacts,
   };
+}
+
+/** O6:渲染 summary message 内容,可选附加 promoted facts 摘要。 */
+function renderSummaryBody(summary: string, facts: PromotedFact[] | undefined): string {
+  const head = `[Previous conversation summary]\n\n${summary}\n\n` +
+               `[End of summary. The conversation continues below.]`;
+  if (!facts || facts.length === 0) return head;
+  const saved = facts.filter((f) => f.status === "saved").map((f) => f.name);
+  const skipped = facts.filter((f) => f.status === "skipped").map((f) => f.name);
+  const blocked = facts.filter((f) => f.status === "blocked").map((f) => f.name);
+  const failed = facts.filter((f) => f.status === "failed").map((f) => f.name);
+  const parts: string[] = [];
+  if (saved.length > 0) parts.push(`saved ${saved.length}: ${saved.join(", ")}`);
+  if (skipped.length > 0) parts.push(`skipped ${skipped.length} (already exist): ${skipped.join(", ")}`);
+  if (blocked.length > 0) parts.push(`blocked ${blocked.length}: ${blocked.join(", ")}`);
+  if (failed.length > 0) parts.push(`failed ${failed.length}: ${failed.join(", ")}`);
+  return `${head}\n\n[Auto-promoted to long-term memory — ${parts.join("; ")}]`;
 }
 
 /**
@@ -176,9 +217,25 @@ async function promoteFactsToMemory(
   facts: ExtractedFact[],
   cwd: string,
   hooks: HooksConfig | undefined,
+  dedup: boolean,
 ): Promise<PromotedFact[]> {
   const results: PromotedFact[] = [];
   for (const fact of facts) {
+    // O4 dedup:同名 memory 已存在(任一 scope)→ 跳过,不覆盖。
+    // 防 LLM 反复提取同名 slug(如 user-prefers-typescript)把 verified 打回 auto。
+    // 用户若想更新,走 /memory edit 显式改。dedup=false 时关闭此检查。
+    if (dedup &&
+        (existsSync(memoryFilePath(cwd, fact.name, "project")) ||
+         existsSync(memoryFilePath(cwd, fact.name, "user")))) {
+      results.push({
+        name: fact.name,
+        type: fact.type,
+        description: fact.description,
+        status: "skipped",
+        reason: "already exists; not overwriting (use /memory edit to update)",
+      });
+      continue;
+    }
     try {
       await runHooks(
         "MemoryPromote",

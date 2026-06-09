@@ -27,23 +27,49 @@ import type { PipelineStage } from "../pipeline.js";
 import type { RequestCtx } from "./ctx.js";
 import type { Message } from "../../types/index.js";
 import { queryMemoryIndex, type QueryResult } from "../../loop/memory-index.js";
-import { countText } from "../tokenize.js";
+import { countText, countMessages } from "../tokenize.js";
 import { log } from "../../log/index.js";
 
 const DEFAULT_TOP_K = 5;
 const DEFAULT_MIN_COUNT = 3;
 const DEFAULT_MAX_INJECT_TOKENS = 1500;
+const DEFAULT_FULL_INDEX_MAX_LINES = 200;
 const QUERY_RECENT_USER_N = 3;
 const SHORT_QUERY_THRESHOLD = 5;
+
+/**
+ * O1:budget 紧张时按比例降量,避免 memory 200 行死占预算而 trim 反复裁 history。
+ *
+ * 档位:
+ *   - <60% budget  → scale 1.0(满量)
+ *   - 60-80% budget → scale 0.5
+ *   - >80% budget  → scale 0.25(仍尽量保 trusted)
+ *
+ * 无 contextWindow 时(unknown 模型) → scale 1.0(不动)。
+ * settings.injectMemory.budgetScaleEnabled=false → 一律 scale 1.0(关闭动态降量)。
+ */
+function pickInjectionScale(ctx: RequestCtx): number {
+  if (ctx.settings.injectMemory?.budgetScaleEnabled === false) return 1.0;
+  const window = ctx.services.contextWindow;
+  if (!window) return 1.0;
+  const used = countMessages(ctx.messages, ctx.systemPrompt);
+  const ratio = used / window;
+  if (ratio < 0.6) return 1.0;
+  if (ratio < 0.8) return 0.5;
+  return 0.25;
+}
 
 export class InjectMemoryStage implements PipelineStage<RequestCtx> {
   readonly name = "inject-memory";
 
   async run(ctx: RequestCtx): Promise<void> {
+    const scale = pickInjectionScale(ctx);
+
     // 1. 向量模式优先(若启用且不退化)
     const embIndex = ctx.services.memoryEmbeddingIndex;
     const minCount = ctx.services.memoryEmbeddingMinCount ?? DEFAULT_MIN_COUNT;
-    const maxTokens = ctx.services.memoryEmbeddingMaxInjectTokens ?? DEFAULT_MAX_INJECT_TOKENS;
+    const baseMaxTokens = ctx.services.memoryEmbeddingMaxInjectTokens ?? DEFAULT_MAX_INJECT_TOKENS;
+    const maxTokens = Math.max(200, Math.floor(baseMaxTokens * scale));
 
     if (embIndex && embIndex.entries.length >= minCount) {
       const queryText = buildQuery(ctx.messages);
@@ -54,6 +80,8 @@ export class InjectMemoryStage implements PipelineStage<RequestCtx> {
           if (results.length > 0) {
             log.debug("[memory recall]", {
               query: queryText.slice(0, 100),
+              scale,
+              maxTokens,
               hits: results.map((r) => ({
                 name: r.entry.name,
                 scope: r.entry.scope,
@@ -74,11 +102,23 @@ export class InjectMemoryStage implements PipelineStage<RequestCtx> {
       }
     }
 
-    // 2. 全文模式(默认 / 退化)
+    // 2. 全文模式(默认 / 退化)— 同样按 scale 裁行
     const fullIndex = ctx.services.memoryIndex?.trim();
     if (!fullIndex) return;
-    ctx.systemPrompt = appendMemorySection(ctx.systemPrompt, fullIndex, "full");
+    const maxLines = Math.max(20, Math.floor(DEFAULT_FULL_INDEX_MAX_LINES * scale));
+    const scaledIndex = truncateIndexByLines(fullIndex, maxLines);
+    ctx.systemPrompt = appendMemorySection(ctx.systemPrompt, scaledIndex, "full");
   }
+}
+
+/**
+ * 全文模式按行裁(scale<1 时)。loadMemoryIndex 默认已截到 200 行;再次截更小档位。
+ * 保头部行(项目 scope 在前 + trust 排序已在 caller 完成)。
+ */
+function truncateIndexByLines(text: string, maxLines: number): string {
+  const lines = text.split("\n");
+  if (lines.length <= maxLines) return text;
+  return lines.slice(0, maxLines).join("\n") + `\n... [${lines.length - maxLines} more lines truncated for budget]`;
 }
 
 /**
@@ -140,16 +180,17 @@ function extractAssistantText(m: Message & { role: "assistant" }): string {
  *   - verified:description + body snippet(前 ~400 字)
  *   - auto:rawIndexLine(索引行同传统模式)
  *
- * 预算策略:按相关性排序遍历,累计 token;超 maxTokens 时:
- *   - 已塞入的 trusted 全留
- *   - 已塞入的 verified / auto 从尾部回退
- *   - 还能塞进 token 预算内的 trusted 优先塞
+ * 预算策略(O5 调整):
+ *   - 选取阶段:按相关性 weighted 分数排序,守 maxTokens 预算选 kept
+ *   - 输出阶段:**kept 按 entry.name 字典序排序输出**,保证同一 query 下字节级稳定 →
+ *     prompt cache 命中(否则 score 微抖动会换序导致 cache miss)
+ *   - 超预算 trusted 会回退 verified/auto 尾部腾位
  */
 function formatRetrievedInjection(results: QueryResult[], maxTokens: number): string {
   // 先按"原排序"产出每条的注入文本 + token 估算
   const items = results.map((r) => {
     const text = renderEntry(r);
-    return { text, tokens: countText(text), trust: r.entry.trust };
+    return { text, tokens: countText(text), trust: r.entry.trust, name: r.entry.name };
   });
 
   // 第一遍:按相关性顺序塞入,守预算
@@ -178,6 +219,8 @@ function formatRetrievedInjection(results: QueryResult[], maxTokens: number): st
     // 非 trusted 超预算 → 直接丢
   }
 
+  // O5:按 name 字典序输出 → 字节级稳定,prompt cache 友好
+  kept.sort((a, b) => a.name.localeCompare(b.name));
   return kept.map((k) => k.text).join("\n\n");
 }
 

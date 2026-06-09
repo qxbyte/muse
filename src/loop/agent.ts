@@ -28,7 +28,7 @@ import { TodoStore } from "./todos.js";
 import { log } from "../log/index.js";
 import type { Pipeline } from "../preprocess/pipeline.js";
 import { PipelineBlockedError } from "../preprocess/pipeline.js";
-import type { RequestCtx, RequestServices } from "../preprocess/request/index.js";
+import type { RequestCtx, RequestServices, RequestPreprocessSettings } from "../preprocess/request/index.js";
 import { createRequestCtx, BudgetExceededError } from "../preprocess/request/index.js";
 import { countMessages } from "../preprocess/tokenize.js";
 import { compactMessages } from "./context.js";
@@ -128,6 +128,8 @@ export interface AgentContext {
   requestPipeline?: Pipeline<RequestCtx>;
   /** 与 requestPipeline 配套的 services(memoryIndex / provider / lang 等)。 */
   requestServices?: RequestServices;
+  /** request pipeline 的运行时设置(每轮统一,settings.preprocess.request 透传)。 */
+  requestSettings?: RequestPreprocessSettings;
   /** 工具结果后处理 pipeline。 */
   resultPipeline?: Pipeline<ResultCtx>;
   /** result pipeline 的运行时设置(每轮统一)。 */
@@ -455,11 +457,13 @@ export class Agent {
     messages: Message[];
   }> {
     if (this.ctx.requestPipeline && this.ctx.requestServices) {
+      const reqSettings = this.ctx.requestSettings;
       const ctx = createRequestCtx({
         messages: this.messages,
         modelId: this.ctx.llm.model,
         mode: this.ctx.permissions.getMode(),
         cwd: this.ctx.cwd,
+        settings: reqSettings,
         services: {
           ...this.ctx.requestServices,
           todos: this.todos,
@@ -474,6 +478,10 @@ export class Agent {
               abortSignal: signal,
               hooks: this.ctx.hooks,
               cwd: this.ctx.cwd,
+              schema: reqSettings?.compact?.schema,
+              fallbackOnFormatFail: reqSettings?.compact?.fallbackOnFormatFail,
+              dedupPromotedFacts: reqSettings?.compact?.dedupPromotedFacts,
+              promoteFactsToMemory: reqSettings?.budgetGuard?.promoteFactsToMemory,
             });
             this.messages = result.newMessages;
             // II-5 联动:把成功 promote 的 facts upsert 到 in-memory 向量索引(session 内立即可召回)

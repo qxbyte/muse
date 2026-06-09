@@ -52,6 +52,13 @@ async function main() {
       const { registry: modelsRegistry, sources: modelsSources } = await loadModelsRegistry();
       log.debug("config loaded", { settingsSources: sources, modelsSources });
 
+      // O2:image token 估算常量(模块级单例;tokenize 模块在此一次性应用)
+      const imgTok = settings.preprocess?.request?.tokenize?.imageTokenEstimate;
+      if (typeof imgTok === "number") {
+        const { setImageTokenEstimate } = await import("./preprocess/tokenize.js");
+        setImageTokenEstimate(imgTok);
+      }
+
       const model = opts.model ?? settings.llm?.model;
       const provider = opts.provider ?? settings.llm?.provider;
 
@@ -329,6 +336,7 @@ async function runOneShot(opts: {
       provider: opts.llm.providerName,
       extraSystemPrompt,
     },
+    requestSettings: opts.settings.preprocess?.request,
     resultPipeline,
     resultSettings: opts.settings.preprocess?.result,
     hooks: opts.settings.hooks,

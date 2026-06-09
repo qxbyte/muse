@@ -25,7 +25,7 @@ import { countMessages } from "../tokenize.js";
 import { findSafeCutoff } from "../../loop/context.js";
 
 const DEFAULT_TRIM_RATIO = 0.8;
-const TARGET_RATIO = 0.6;
+const DEFAULT_TARGET_RATIO = 0.6;
 const MIN_KEEP_RECENT = 4;
 const MAX_KEEP_RECENT = 24;
 
@@ -42,15 +42,18 @@ export class TrimHistoryStage implements PipelineStage<RequestCtx> {
 
   run(ctx: RequestCtx): void {
     const budget = ctx.services.contextWindow!;
-    const trimRatio = ctx.settings.trimHistory?.budgetRatio ?? DEFAULT_TRIM_RATIO;
+    const cfg = ctx.settings.trimHistory;
+    const trimRatio = cfg?.budgetRatio ?? DEFAULT_TRIM_RATIO;
+    const targetRatio = cfg?.targetRatio ?? DEFAULT_TARGET_RATIO;
+    const preserveUsers = cfg?.preserveUserMessages !== false; // 默认 true
     const triggerAt = budget * trimRatio;
-    const targetAt = budget * TARGET_RATIO;
+    const targetAt = budget * targetRatio;
 
     const initial = countMessages(ctx.messages, ctx.systemPrompt, ctx.tools);
     ctx.estimatedTokens = initial;
     if (initial <= triggerAt) return;
 
-    const trimmed = trimMessages(ctx.messages, targetAt, ctx.systemPrompt, ctx.tools);
+    const trimmed = trimMessages(ctx.messages, targetAt, ctx.systemPrompt, ctx.tools, preserveUsers);
     if (trimmed === ctx.messages) return;
 
     ctx.messages = trimmed;
@@ -76,6 +79,7 @@ export function trimMessages(
   targetTokens: number,
   systemPrompt: string,
   tools: import("../../types/index.js").ToolDefinition[],
+  preserveUsers = true,
 ): Message[] {
   if (messages.length <= MIN_KEEP_RECENT + 2) return messages;
 
@@ -87,7 +91,9 @@ export function trimMessages(
     const cutoff = findSafeCutoff(messages, keepRecent);
     if (cutoff < MIN_TRIM_COUNT) continue;
 
-    const trimmed = buildTrimmedWithUserProtection(messages, cutoff);
+    const trimmed = preserveUsers
+      ? buildTrimmedWithUserProtection(messages, cutoff)
+      : buildTrimmedLegacyMarker(messages, cutoff);
     const tokens = countMessages(trimmed, systemPrompt, tools);
     if (tokens <= targetTokens) return trimmed;
     // 没命中但记下最激进的尝试,作为兜底
@@ -96,6 +102,20 @@ export function trimMessages(
 
   // 所有 keepRecent 都裁不到 target 以下 — 返回最激进的那次(已是最大努力)
   return bestTrimmed ?? messages;
+}
+
+/**
+ * 旧 marker 行为(preserveUserMessages=false 时回退到此)。
+ * 把 messages[1..cutoff-1] 全段替成一行 marker,不分 role 直接丢。
+ * 仅用于希望 prompt size 最小、不在乎 user 消息保留的极致预算场景。
+ */
+function buildTrimmedLegacyMarker(messages: Message[], cutoff: number): Message[] {
+  const dropped = cutoff - 1;
+  const marker: Message = {
+    role: "user",
+    content: `[${dropped} earlier message${dropped === 1 ? "" : "s"} trimmed to fit context window]`,
+  };
+  return [messages[0], marker, ...messages.slice(cutoff)];
 }
 
 /**

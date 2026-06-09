@@ -237,6 +237,191 @@ describe("I-5 — compactMessages 联动 memory", () => {
   });
 });
 
+describe("O3 — 9-section LLM 失败时降级 6-section 重试", () => {
+  /** 第一次调 stream 抛错,第二次正常输出。用此验证降级路径。 */
+  function makeRetryLLM(secondText: string): { llm: LLMClient; calls: number } {
+    const state = { calls: 0 };
+    const llm: LLMClient = {
+      providerName: "test",
+      model: "test",
+      capabilities: { toolCalling: false, parallelToolCalls: false, vision: false, jsonMode: false, maxContextWindow: 0 },
+      async *stream(_opts: StreamOptions): AsyncIterable<LLMEvent> {
+        state.calls++;
+        if (state.calls === 1) {
+          yield { type: "error", error: new Error("LLM stream error (9-section)") } as LLMEvent;
+          return;
+        }
+        yield { type: "text", delta: secondText } as LLMEvent;
+        yield { type: "finish", reason: "stop" } as LLMEvent;
+      },
+    };
+    return { llm, calls: state.calls } as never; // calls 通过闭包后续读
+  }
+
+  it("9-section 抛错 → 自动用 6-section 重试,compact 成功", async () => {
+    let calls = 0;
+    const llm: LLMClient = {
+      providerName: "test",
+      model: "test",
+      capabilities: { toolCalling: false, parallelToolCalls: false, vision: false, jsonMode: false, maxContextWindow: 0 },
+      async *stream(_opts: StreamOptions): AsyncIterable<LLMEvent> {
+        calls++;
+        if (calls === 1) {
+          yield { type: "error", error: new Error("LLM stream error (9-section)") } as LLMEvent;
+          return;
+        }
+        yield { type: "text", delta: "Fallback 6-section summary." } as LLMEvent;
+        yield { type: "finish", reason: "stop" } as LLMEvent;
+      },
+    };
+    const result = await compactMessages(longHistory(), { llm, cwd: FIXED_CWD });
+    expect(calls).toBe(2);
+    expect(result.noop).toBe(false);
+    expect(result.summary).toContain("Fallback 6-section summary");
+  });
+
+  it("6-section 也失败 → 抛错(不无限重试)", async () => {
+    const llm: LLMClient = {
+      providerName: "test",
+      model: "test",
+      capabilities: { toolCalling: false, parallelToolCalls: false, vision: false, jsonMode: false, maxContextWindow: 0 },
+      async *stream(_opts: StreamOptions): AsyncIterable<LLMEvent> {
+        yield { type: "error", error: new Error("LLM down") } as LLMEvent;
+      },
+    };
+    await expect(compactMessages(longHistory(), { llm, cwd: FIXED_CWD })).rejects.toThrow(/LLM down/);
+  });
+
+  it("显式 6-section 失败时不再降级(已是 fallback)", async () => {
+    let calls = 0;
+    const llm: LLMClient = {
+      providerName: "test",
+      model: "test",
+      capabilities: { toolCalling: false, parallelToolCalls: false, vision: false, jsonMode: false, maxContextWindow: 0 },
+      async *stream(_opts: StreamOptions): AsyncIterable<LLMEvent> {
+        calls++;
+        yield { type: "error", error: new Error("6-only error") } as LLMEvent;
+      },
+    };
+    await expect(
+      compactMessages(longHistory(), { llm, cwd: FIXED_CWD, schema: "6-section" }),
+    ).rejects.toThrow(/6-only error/);
+    expect(calls).toBe(1); // 不重试
+  });
+});
+
+describe("O4 — compact-promote dedup(skip if exists)", () => {
+  it("同名 memory 已存在 → status=skipped,不覆盖", async () => {
+    // 预置一条 verified
+    const { writeMemory: wm } = await import("../src/loop/memory.js");
+    await wm(FIXED_CWD, {
+      name: "team-uses-pnpm",
+      description: "原 verified 版本",
+      type: "project",
+      body: "verified content",
+      trust: "verified",
+      source: "user-edit",
+    });
+
+    const llmText = `Summary
+\`\`\`json
+{
+  "facts": [
+    { "name": "team-uses-pnpm", "type": "project", "description": "auto promote 重复", "body": "should not overwrite" }
+  ]
+}
+\`\`\``;
+    const llm = makeLLM(llmText);
+    const result = await compactMessages(longHistory(), { llm, cwd: FIXED_CWD });
+
+    expect(result.promotedFacts).toHaveLength(1);
+    expect(result.promotedFacts![0].status).toBe("skipped");
+    expect(result.promotedFacts![0].reason).toMatch(/already exists/i);
+
+    // 验证未被覆盖
+    const { readMemory } = await import("../src/loop/memory.js");
+    const file = await readMemory(FIXED_CWD, "team-uses-pnpm");
+    expect(file.frontmatter.trust).toBe("verified");
+    expect(file.frontmatter.description).toBe("原 verified 版本");
+    expect(file.body).toContain("verified content");
+  });
+
+  it("user scope 同名也触发 skip(任一 scope 已存在即跳过)", async () => {
+    const { writeMemory: wm } = await import("../src/loop/memory.js");
+    await wm(FIXED_CWD, {
+      name: "user-pref-tabs",
+      description: "user scope existing",
+      type: "feedback",
+      body: "tabs preferred",
+      scope: "user",
+    });
+
+    const llmText = `Summary
+\`\`\`json
+{"facts":[{"name":"user-pref-tabs","type":"feedback","description":"auto","body":"x"}]}
+\`\`\``;
+    const llm = makeLLM(llmText);
+    const result = await compactMessages(longHistory(), { llm, cwd: FIXED_CWD });
+    expect(result.promotedFacts).toHaveLength(1);
+    expect(result.promotedFacts![0].status).toBe("skipped");
+  });
+});
+
+describe("O6 — summary message 末尾附 promoted facts 摘要", () => {
+  it("有 saved facts → summary message 含 [Auto-promoted ... saved N: name1, name2]", async () => {
+    const llmText = `Summary body.
+\`\`\`json
+{
+  "facts": [
+    { "name": "fact-one", "type": "user", "description": "d1", "body": "b1" },
+    { "name": "fact-two", "type": "project", "description": "d2", "body": "b2" }
+  ]
+}
+\`\`\``;
+    const llm = makeLLM(llmText);
+    const result = await compactMessages(longHistory(), { llm, cwd: FIXED_CWD });
+    const first = result.newMessages[0];
+    expect(first.role).toBe("user");
+    const content = typeof first.content === "string" ? first.content : "";
+    expect(content).toContain("[Auto-promoted to long-term memory");
+    expect(content).toContain("saved 2");
+    expect(content).toContain("fact-one");
+    expect(content).toContain("fact-two");
+  });
+
+  it("有 skipped facts → 摘要也列出", async () => {
+    const { writeMemory: wm } = await import("../src/loop/memory.js");
+    await wm(FIXED_CWD, {
+      name: "already-here",
+      description: "pre-existing",
+      type: "user",
+      body: "x",
+    });
+    const llmText = `Summary body.
+\`\`\`json
+{
+  "facts": [
+    { "name": "already-here", "type": "user", "description": "d", "body": "b" }
+  ]
+}
+\`\`\``;
+    const llm = makeLLM(llmText);
+    const result = await compactMessages(longHistory(), { llm, cwd: FIXED_CWD });
+    const content = typeof result.newMessages[0].content === "string" ? result.newMessages[0].content : "";
+    expect(content).toContain("skipped 1");
+    expect(content).toContain("already-here");
+  });
+
+  it("无 facts → summary message 不含 [Auto-promoted]", async () => {
+    const llmText = `Plain summary, no facts block.`;
+    const llm = makeLLM(llmText);
+    const result = await compactMessages(longHistory(), { llm, cwd: FIXED_CWD });
+    const content = typeof result.newMessages[0].content === "string" ? result.newMessages[0].content : "";
+    expect(content).not.toContain("[Auto-promoted");
+    expect(content).toContain("[Previous conversation summary]");
+  });
+});
+
 describe("I-5 — apply-mode-filter MemoryWrite/Read 白名单", () => {
   function mkPlanCtx(): RequestCtx {
     const registry = new ToolRegistry();

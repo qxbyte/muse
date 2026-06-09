@@ -12,8 +12,35 @@ import type { HierarchyLayer } from "../../loop/hierarchy.js";
 import type { MemoryIndex } from "../../loop/memory-index.js";
 
 export interface RequestPreprocessSettings {
-  trimHistory?: { enabled?: boolean; budgetRatio?: number };
-  budgetGuard?: { enabled?: boolean; budgetRatio?: number };
+  trimHistory?: {
+    enabled?: boolean;
+    budgetRatio?: number;
+    /** 裁到此预算占比以下停手(默认 0.6,I-1 ADR #3)。 */
+    targetRatio?: number;
+    /** I-1:user 消息原文保护开关(默认 true)。 */
+    preserveUserMessages?: boolean;
+  };
+  budgetGuard?: {
+    enabled?: boolean;
+    budgetRatio?: number;
+    /** I-5:自动 compact 是否 promote facts(默认 true)。 */
+    promoteFactsToMemory?: boolean;
+  };
+  /** I-2/O3/O4:compaction 子开关。 */
+  compact?: {
+    schema?: "9-section" | "6-section";
+    fallbackOnFormatFail?: boolean;
+    dedupPromotedFacts?: boolean;
+  };
+  /** O1:inject-memory 动态降量开关(默认 true)。 */
+  injectMemory?: {
+    budgetScaleEnabled?: boolean;
+  };
+  /** O2:image token 估算常量(默认 1500)。tokenize 模块在启动期一次性应用,
+   *  此字段对 stage 而言只读;真正生效路径见 setImageTokenEstimate。 */
+  tokenize?: {
+    imageTokenEstimate?: number;
+  };
   redact?: { enabled?: boolean };
   /** I-3 stale tool result clearing。默认开,keepRecentTurns=3,clearTools=[Read/Grep/Glob]。 */
   clearStaleToolResults?: {
