@@ -19,6 +19,29 @@ function enc(): Tiktoken {
   return _enc;
 }
 
+/**
+ * O2:image 占位 token 保守常量。
+ *
+ * 真值:vision 模型一张 1024×1024 ≈ 765-1500 token(因 provider 而异);
+ * 旧实装用 `[image: path]` 占位文本 → 约 8 token,与真实相差 2 个数量级,
+ * 带图历史下 budget 监控失效。1500 是 OpenAI / Anthropic 公布的高分辨率上限,
+ * 取此值确保不会**低估** budget(宁可早点 trim 也不悬崖式撞爆 context window)。
+ *
+ * 可由 settings.preprocess.tokenize.imageTokenEstimate 覆盖(未配走默认)。
+ */
+const DEFAULT_IMAGE_TOKEN_ESTIMATE = 1500;
+let _imageTokenEstimate = DEFAULT_IMAGE_TOKEN_ESTIMATE;
+
+/** 由配置层在启动时调用,运行期改 image token 估算常量。 */
+export function setImageTokenEstimate(n: number): void {
+  if (Number.isFinite(n) && n > 0) _imageTokenEstimate = Math.floor(n);
+}
+
+/** 测试 / 外部读取当前 image token 估算(默认 1500)。 */
+export function getImageTokenEstimate(): number {
+  return _imageTokenEstimate;
+}
+
 /** 计单段文本的 token 数。空字符串返 0。 */
 export function countText(text: string): number {
   if (!text) return 0;
@@ -62,8 +85,10 @@ export function countMessages(
           // 估算时把 path + text 全算上,避免 file 附件 token 数被漏估
           total += countText(p.path) + countText(p.text);
         } else if (p.type === "image") {
-          // vision token 由模型方按 tile/resolution 计费,prompt 侧用占位估算
-          total += countText(`[image: ${p.path ?? p.mediaType}]`);
+          // O2:vision token 由模型方按 tile/resolution 计费;占位文本算下来 ~8 token,
+          // 实际 vision 模型一张图占 ~1500 token,差 2 个数量级 → 用保守常量代替,
+          // 防带图历史 budget 监控失效。
+          total += _imageTokenEstimate;
         }
       }
     }

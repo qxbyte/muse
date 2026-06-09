@@ -242,10 +242,12 @@ const COMPACT: SlashCommand = {
 function renderPromotedFactsNote(facts?: import("../loop/context.js").PromotedFact[]): string {
   if (!facts || facts.length === 0) return "";
   const saved = facts.filter((f) => f.status === "saved");
+  const skipped = facts.filter((f) => f.status === "skipped");
   const blocked = facts.filter((f) => f.status === "blocked");
   const failed = facts.filter((f) => f.status === "failed");
   const lines: string[] = ["\n\nPromoted to long-term memory:"];
   for (const f of saved) lines.push(`  ✓ [${f.type}] ${f.name} — ${f.description}`);
+  for (const f of skipped) lines.push(`  · [${f.type}] ${f.name} (skipped: ${f.reason ?? "already exists"})`);
   for (const f of blocked) lines.push(`  ⊘ [${f.type}] ${f.name} (blocked by MemoryPromote hook${f.reason ? `: ${f.reason}` : ""})`);
   for (const f of failed) lines.push(`  ✗ [${f.type}] ${f.name} (failed${f.reason ? `: ${f.reason}` : ""})`);
   return lines.join("\n");
