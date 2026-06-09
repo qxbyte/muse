@@ -43,11 +43,15 @@ export interface CompactOptions {
   hooks?: HooksConfig;
   /** I-2 schema 选择;默认 "9-section"。 */
   schema?: SummarySchema;
+  /** O3:9-section LLM 失败时自动用 6-section 重试一次(默认 true)。 */
+  fallbackOnFormatFail?: boolean;
   /** I-5 联动:本次 compact 触发的 cwd,用于 writeMemory 写到正确项目下。
    *  未提供时跳过 facts 提取(纯摘要模式)。 */
   cwd?: string;
   /** I-5:是否自动把 facts 写入 memory(默认 true)。 */
   promoteFactsToMemory?: boolean;
+  /** O4:source=compact-promote 写入前检查同名 memory 是否已存在(默认 true,跳过不覆盖)。 */
+  dedupPromotedFacts?: boolean;
 }
 
 export class CompactBlockedError extends Error {
@@ -116,13 +120,14 @@ export async function compactMessages(
   const recent = messages.slice(cutoff);
   const schema: SummarySchema = opts.schema ?? "9-section";
 
-  // O3:9-section 失败 → 6-section 降级重试一次。LLM 流偶发 / 网络抖动可吸收,
-  // 仍失败再抛(由 budget-guard 包成 BudgetExceededError)。
+  // O3:9-section 失败 → 6-section 降级重试一次(可由 fallbackOnFormatFail=false 关闭)。
+  // LLM 流偶发 / 网络抖动可吸收,仍失败再抛(由 budget-guard 包成 BudgetExceededError)。
+  const fallbackEnabled = opts.fallbackOnFormatFail !== false; // 默认 true
   let rawSummary: string;
   try {
     rawSummary = await summarizeConversation(older, opts.llm, schema, opts.abortSignal, opts.onProgress);
   } catch (err) {
-    if (schema === "9-section" && !opts.abortSignal?.aborted) {
+    if (fallbackEnabled && schema === "9-section" && !opts.abortSignal?.aborted) {
       rawSummary = await summarizeConversation(older, opts.llm, "6-section", opts.abortSignal, opts.onProgress);
     } else {
       throw err;
@@ -159,7 +164,8 @@ export async function compactMessages(
   let promotedFacts: PromotedFact[] | undefined;
   const shouldPromote = opts.promoteFactsToMemory !== false && opts.cwd && facts.length > 0;
   if (shouldPromote) {
-    promotedFacts = await promoteFactsToMemory(facts, opts.cwd!, opts.hooks);
+    const dedup = opts.dedupPromotedFacts !== false; // 默认 true
+    promotedFacts = await promoteFactsToMemory(facts, opts.cwd!, opts.hooks, dedup);
   }
 
   // O6:把 promote 结果摘要回写到 summary message 末尾,让用户在 history 中
@@ -211,14 +217,16 @@ async function promoteFactsToMemory(
   facts: ExtractedFact[],
   cwd: string,
   hooks: HooksConfig | undefined,
+  dedup: boolean,
 ): Promise<PromotedFact[]> {
   const results: PromotedFact[] = [];
   for (const fact of facts) {
     // O4 dedup:同名 memory 已存在(任一 scope)→ 跳过,不覆盖。
     // 防 LLM 反复提取同名 slug(如 user-prefers-typescript)把 verified 打回 auto。
-    // 用户若想更新,走 /memory edit 显式改。
-    if (existsSync(memoryFilePath(cwd, fact.name, "project")) ||
-        existsSync(memoryFilePath(cwd, fact.name, "user"))) {
+    // 用户若想更新,走 /memory edit 显式改。dedup=false 时关闭此检查。
+    if (dedup &&
+        (existsSync(memoryFilePath(cwd, fact.name, "project")) ||
+         existsSync(memoryFilePath(cwd, fact.name, "user")))) {
       results.push({
         name: fact.name,
         type: fact.type,

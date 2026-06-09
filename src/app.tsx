@@ -570,6 +570,7 @@ export function App({
         provider: llm.providerName,
         extraSystemPrompt: sessionExtraPrompt,
       },
+      requestSettings: settings.preprocess?.request,
       resultPipeline,
       resultSettings: settings.preprocess?.result,
       hooks: settings.hooks,

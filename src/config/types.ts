@@ -74,11 +74,37 @@ export const InputPreprocessSettingsSchema = z.object({
 export const RequestPreprocessSettingsSchema = z.object({
   trimHistory: z.object({
     enabled: z.boolean().optional(),
+    /** 触发裁剪的预算占比阈值(默认 0.8)。 */
     budgetRatio: z.number().min(0).max(1).optional(),
+    /** 裁剪到此预算占比以下停手(默认 0.6,I-1 ADR #3)。 */
+    targetRatio: z.number().min(0).max(1).optional(),
+    /** I-1:被切段内的 user 消息原文是否保留(默认 true);false 回旧 marker 行为。 */
+    preserveUserMessages: z.boolean().optional(),
   }).optional(),
   budgetGuard: z.object({
     enabled: z.boolean().optional(),
     budgetRatio: z.number().min(0).max(1).optional(),
+    /** I-5:budget-guard 自动 compact 是否把 LLM 提取的 facts promote 到 memory(默认 true)。 */
+    promoteFactsToMemory: z.boolean().optional(),
+  }).optional(),
+  compact: z.object({
+    /** I-2 摘要模板:"9-section"(默认 / 信息密度高)/ "6-section"(降级 / 容错性高)。 */
+    schema: z.enum(["9-section", "6-section"]).optional(),
+    /** O3:9-section LLM 流失败时自动用 6-section 重试一次(默认 true)。 */
+    fallbackOnFormatFail: z.boolean().optional(),
+    /** O4:source=compact-promote 写入前检查同名 memory 是否已存在(默认 true,跳过不覆盖)。 */
+    dedupPromotedFacts: z.boolean().optional(),
+  }).optional(),
+  injectMemory: z.object({
+    /** O1:budget 紧张时按占比动态降量(默认 true);false 锁死满量注入,
+     *  适合 contextWindow 配置不准或希望可预测注入大小的场景。 */
+    budgetScaleEnabled: z.boolean().optional(),
+  }).optional(),
+  tokenize: z.object({
+    /** O2:image part token 估算常量(默认 1500;vision 模型高分辨率上限)。
+     *  vision 模型按 tile / resolution 计费,占位文本无法预知真值;调高 → 早 trim
+     *  保守,调低 → 鼓励多带图但有撞 context window 风险。 */
+    imageTokenEstimate: z.number().int().positive().optional(),
   }).optional(),
   redact: z.object({
     enabled: z.boolean().optional(),

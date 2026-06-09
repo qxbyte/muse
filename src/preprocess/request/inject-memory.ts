@@ -46,8 +46,10 @@ const SHORT_QUERY_THRESHOLD = 5;
  *   - >80% budget  → scale 0.25(仍尽量保 trusted)
  *
  * 无 contextWindow 时(unknown 模型) → scale 1.0(不动)。
+ * settings.injectMemory.budgetScaleEnabled=false → 一律 scale 1.0(关闭动态降量)。
  */
 function pickInjectionScale(ctx: RequestCtx): number {
+  if (ctx.settings.injectMemory?.budgetScaleEnabled === false) return 1.0;
   const window = ctx.services.contextWindow;
   if (!window) return 1.0;
   const used = countMessages(ctx.messages, ctx.systemPrompt);
