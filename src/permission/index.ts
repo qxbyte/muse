@@ -58,6 +58,13 @@ export class PermissionGate {
   private mode: PermissionMode = "default";
   /** Session 级 allow：用户在 PermissionPrompt 选 "yes, for session" 后填充。 */
   private sessionAllow = new Set<string>();
+  /**
+   * Skill 临时白名单(扩展接入口 §五.8)。
+   * skill 激活时调 pushSkillContext({skillName, allowedTools}),
+   * 期内 PermissionGate.decide 对不在白名单的工具直接 deny。
+   * 用栈:嵌套激活时 outer skill 失效,inner 收回时恢复。
+   */
+  private skillContextStack: { skillName: string; allowedTools: Set<string> }[] = [];
 
   constructor(rules: Permissions = {}) {
     this.rules = {
@@ -66,6 +73,37 @@ export class PermissionGate {
       deny: rules.deny ?? [],
       defaultMode: rules.defaultMode ?? "ask",
     };
+  }
+
+  /** Skill 激活时调;allowedTools 不传或空数组视为不限制。 */
+  pushSkillContext(skillName: string, allowedTools?: string[]): void {
+    this.skillContextStack.push({
+      skillName,
+      allowedTools: new Set(allowedTools ?? []),
+    });
+  }
+
+  /** Skill 解激活时调(LIFO);name 不匹配栈顶时记 warn 但仍 pop 兜底。 */
+  popSkillContext(skillName: string): void {
+    if (this.skillContextStack.length === 0) return;
+    const top = this.skillContextStack[this.skillContextStack.length - 1];
+    if (top.skillName !== skillName) {
+      // 嵌套不平衡;保守 pop 栈顶
+    }
+    this.skillContextStack.pop();
+  }
+
+  /** 当前激活的 skill name 列表(栈顶在末)。 */
+  activeSkills(): string[] {
+    return this.skillContextStack.map((c) => c.skillName);
+  }
+
+  /** 当前 skill 上下文是否禁止此工具(栈顶为准;白名单空或工具在内 → 允许)。 */
+  private deniedBySkillContext(toolName: string): boolean {
+    if (this.skillContextStack.length === 0) return false;
+    const top = this.skillContextStack[this.skillContextStack.length - 1];
+    if (top.allowedTools.size === 0) return false; // 不限制
+    return !top.allowedTools.has(toolName);
   }
 
   setMode(mode: PermissionMode): void {
@@ -94,6 +132,9 @@ export class PermissionGate {
   decide(input: PermissionInput): Decision {
     // 用户显式 deny 永远生效，所有模式不可绕过
     if (this.matches(this.rules.deny, input)) return "deny";
+    // Skill 白名单(扩展接入口 §五.8):激活期工具不在 allowed-tools 内 → deny
+    // 位置:在 deny 之后(用户 deny 仍最高优先)、session_allow 之前(skill 不能被 session 绕过)
+    if (this.deniedBySkillContext(input.toolName)) return "deny";
     // session 级 allow 在 deny 之后、mode 分支之前生效
     if (this.sessionAllow.has(input.toolName)) return "allow";
 

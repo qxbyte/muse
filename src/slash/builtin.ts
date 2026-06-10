@@ -8,6 +8,7 @@
  */
 
 import type { SlashCommand, SlashCommandContext } from "./types.js";
+import { SKILL } from "./skill.js";
 import { estimateCostUSD, formatUSD, lookupPricing } from "../llm/pricing.js";
 import { redactApiKey } from "../log/index.js";
 import { compactMessages } from "../loop/context.js";
@@ -43,7 +44,8 @@ import type { LLMClient } from "../llm/types.js";
 const HELP_CATEGORIES: Array<{ title: string; names: string[] }> = [
   { title: "Chat & turn control", names: ["help", "clear", "compact", "resume", "cost", "btw"] },
   { title: "Memory", names: ["memory", "remember"] },
-  { title: "Configuration", names: ["model", "config", "mode", "mcp"] },
+  { title: "Extensions", names: ["skill", "mcp"] },
+  { title: "Configuration", names: ["model", "config", "mode"] },
   { title: "Exit", names: ["exit"] },
 ];
 
@@ -1098,6 +1100,7 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   MCP,
   MEMORY,
   REMEMBER,
+  SKILL,
   MODE_CMD,
   COST,
   BTW,

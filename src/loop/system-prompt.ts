@@ -6,6 +6,8 @@
  */
 
 import { homedir } from "node:os";
+import type { SkillFile } from "../skills/types.js";
+import { renderAvailableSkillsSection } from "../skills/inject.js";
 
 export interface SystemPromptOpts {
   cwd: string;
@@ -15,10 +17,12 @@ export interface SystemPromptOpts {
   toolNames: string[];
   /** MEMORY.md index 内容（loadMemoryIndex 加载后传入）；空串视为无 memory。 */
   memoryIndex?: string;
+  /** 可见 skills(扩展接入口 §五.6);disable-model-invocation=true 的会被 inject 过滤掉。 */
+  skills?: SkillFile[];
 }
 
 export function buildSystemPrompt(opts: SystemPromptOpts): string {
-  const { cwd, model, provider, lang, toolNames, memoryIndex } = opts;
+  const { cwd, model, provider, lang, toolNames, memoryIndex, skills } = opts;
   const home = homedir();
   const displayCwd = cwd.startsWith(home) ? cwd.replace(home, "~") : cwd;
 
@@ -32,6 +36,13 @@ export function buildSystemPrompt(opts: SystemPromptOpts): string {
       `- LLM backend: ${provider} (${model})\n` +
       `- Date: ${new Date().toISOString().slice(0, 10)}`,
   );
+
+  // Skills 段(扩展接入口 §五.6)— 放在 Available tools 之前,因为 skill 决定
+  // 用哪些 tool;LLM 看到 skill 后会按 skill 的流程驱动 tool 调用。
+  if (skills && skills.length > 0) {
+    const skillsSection = renderAvailableSkillsSection(skills);
+    if (skillsSection) sections.push(skillsSection);
+  }
 
   sections.push(
     `# Available tools\n` +

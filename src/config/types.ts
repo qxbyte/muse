@@ -155,9 +155,23 @@ export const SettingsSchema = z.object({
   permissions: PermissionsSchema.optional(),
   ui: UISchema.optional(),
   mcpServers: z.record(z.unknown()).optional(),
+  /**
+   * Skills 模块设置(模块设计/扩展接入口/设计.md §五.10)。
+   *
+   * Skills 是 markdown prompt 包(SKILL.md + frontmatter),两层 scope:
+   *   personal  ~/.muse/skills/<name>/SKILL.md         跨项目用户级
+   *   project   <cwd>/.muse/skills/<name>/SKILL.md     项目级,可入 git
+   * 冲突时 project 覆盖 personal。
+   */
   skills: z.object({
+    /** 全局开关;false 时不扫不加载(零开销)。 */
     enabled: z.boolean().optional(),
+    /** skill name 黑名单(personal + project 都跳)。 */
     disabled: z.array(z.string()).optional(),
+    /** personal 目录路径(默认 ~/.muse/skills)。 */
+    personalDir: z.string().optional(),
+    /** project 目录路径,相对 cwd(默认 .muse/skills)。 */
+    projectDir: z.string().optional(),
   }).optional(),
   hooks: HooksConfigSchema.optional(),
   preprocess: PreprocessSettingsSchema.optional(),
