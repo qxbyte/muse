@@ -20,6 +20,7 @@ import { loadHierarchy } from "./loop/hierarchy.js";
 import { buildMemoryIndex, type MemoryIndex } from "./loop/memory-index.js";
 import { loadSkills } from "./skills/loader.js";
 import type { SkillRegistry } from "./skills/types.js";
+import { MCPManager } from "./mcp/index.js";
 import { InputPipeline, createInputCtx, buildUserMessage } from "./preprocess/input/index.js";
 import { RequestPipeline } from "./preprocess/request/index.js";
 import { ResultPipeline } from "./preprocess/result/index.js";
@@ -175,6 +176,19 @@ async function main() {
         }
       }
 
+      // MCP(扩展接入口 §四):懒加载 — 启动期仅记 manifest;首次工具调用时 spawn
+      let mcpManager: MCPManager | undefined;
+      if (settings.mcpServers && Object.keys(settings.mcpServers).length > 0) {
+        mcpManager = new MCPManager({
+          servers: settings.mcpServers as Record<string, import("./mcp/index.js").MCPServerConfig>,
+          toolRegistry: tools,
+        });
+        const n = mcpManager.init();
+        if (!opts.quiet && n > 0) {
+          process.stderr.write(`[mcp] ${n} server(s) configured (lazy — connect on first tool call)\n`);
+        }
+      }
+
       // Pipe input → 拼成一次性 prompt
       const pipedInput = await readStdinIfPiped();
       const oneShotPrompt = [...(promptArgs ?? []), pipedInput].filter(Boolean).join("\n").trim();
@@ -188,6 +202,7 @@ async function main() {
           settings,
           modelsRegistry,
           skillRegistry,
+          mcpManager,
           cwd,
           lang,
           prompt: oneShotPrompt,
@@ -209,6 +224,7 @@ async function main() {
           modelsRegistry={modelsRegistry}
           modelsSources={modelsSources}
           skillRegistry={skillRegistry}
+          mcpManager={mcpManager}
           cwd={cwd}
           lang={lang}
           showBanner={showBanner}
@@ -246,6 +262,7 @@ async function runOneShot(opts: {
   settings: import("./config/types.js").Settings;
   modelsRegistry?: import("./config/models.js").ModelsRegistry;
   skillRegistry?: SkillRegistry;
+  mcpManager?: MCPManager;
   cwd: string;
   lang: "en" | "zh-CN";
   prompt: string;
@@ -347,6 +364,7 @@ async function runOneShot(opts: {
     cwd: opts.cwd,
     todos,
     skillRegistry: opts.skillRegistry,
+    mcpManager: opts.mcpManager,
     requestPipeline,
     requestServices: {
       todos,

@@ -84,6 +84,14 @@ export class ToolRegistry {
     for (const tool of tools) this.register(tool);
   }
 
+  /**
+   * 移除工具(MCP server disconnect / reconnect 时回收 mcp__* 工具)。
+   * 不存在 → 返 false(允许幂等调用)。
+   */
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
   get(name: string): AnyTool | undefined {
     return this.tools.get(name);
   }
