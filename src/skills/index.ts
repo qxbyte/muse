@@ -23,3 +23,13 @@ export { parseSkillFile } from "./parser.js";
 export type { ParsedSkill } from "./parser.js";
 
 export { renderAvailableSkillsSection, renderActivatedSkillBody } from "./inject.js";
+
+export { detectSkillTriggers } from "./trigger.js";
+
+export {
+  createSkillBridgeState,
+  activateSkillsFromText,
+  resetSkillState,
+  appendActivatedSkillBody,
+} from "./agent-bridge.js";
+export type { SkillBridgeState } from "./agent-bridge.js";

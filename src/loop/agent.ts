@@ -31,9 +31,9 @@ import { PipelineBlockedError } from "../preprocess/pipeline.js";
 import type { RequestCtx, RequestServices, RequestPreprocessSettings } from "../preprocess/request/index.js";
 import { createRequestCtx, BudgetExceededError } from "../preprocess/request/index.js";
 import { countMessages } from "../preprocess/tokenize.js";
-import { compactMessages } from "./context.js";
+import { makeCompactClosure } from "./agent-compact.js";
 import { findProjectRoot, loadSubdirMemory } from "./hierarchy.js";
-import { upsertMemoryEntry, removeMemoryEntry } from "./memory-index.js";
+import { removeMemoryEntry, upsertMemoryEntry } from "./memory-index.js";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ResultCtx, ResultPreprocessSettings } from "../preprocess/result/index.js";
@@ -41,6 +41,14 @@ import { createResultCtx } from "../preprocess/result/index.js";
 import type { HooksConfig } from "../preprocess/hooks.js";
 import { runHooks } from "../preprocess/hooks.js";
 import type { PreprocessLogger } from "../preprocess/types.js";
+import type { SkillRegistry } from "../skills/types.js";
+import {
+  createSkillBridgeState,
+  activateSkillsFromText,
+  resetSkillState,
+  appendActivatedSkillBody,
+  type SkillBridgeState,
+} from "../skills/agent-bridge.js";
 
 /**
  * 合并 0..N 个 AbortSignal:任一 aborted → 返回的 signal aborted。
@@ -144,11 +152,19 @@ export interface AgentContext {
   events?: AgentEvents;
   /** 注入式 TodoStore:与 requestServices.todos 共享同一实例。 */
   todos?: TodoStore;
+  /** Skills 注册中心(扩展接入口 §五);未注入 → 不启用 skills。 */
+  skillRegistry?: SkillRegistry;
 }
 
 export class Agent {
   private messages: Message[] = [];
   readonly todos: TodoStore;
+  /**
+   * Skills 激活状态(扩展接入口 §五.7):本轮 user prompt 期间被 LLM 输出文本触发的 skill。
+   * 每个新 user prompt 重置;skill body 会在下一轮 LLM 调用前拼到 system-prompt 尾部。
+   * 实际运行期函数在 src/skills/agent-bridge.ts,agent 只持有 state 与触发调用。
+   */
+  private skillState: SkillBridgeState = createSkillBridgeState();
   /** 本轮 stream 发出时的 input tokens 估算值;finish 真实 usage 回来时减去,补差量给 UI。
    *  为什么:OpenAI 兼容 stream 的 usage 只在 finish 下发,期间 StatusLine 拿不到 token 数;
    *  先用 chars/4 估算并即刻推一次 onUsage,流式中就能显示 "↑ N tokens",真实值到达时无缝覆盖。 */
@@ -204,6 +220,22 @@ export class Agent {
 
   setMessages(msgs: Message[]): void {
     this.messages = msgs;
+  }
+
+  /**
+   * Skills(扩展接入口 §五.7.2):显式触发 skill,绕过 LLM 自决文本匹配路径。
+   * disable-model-invocation=true 的 skill 也允许显式触发。
+   * 返回 null=成功,string=错误原因(skill 不存在 / registry 未注入 / 已激活)。
+   */
+  activateSkillByName(name: string): string | null {
+    if (!this.ctx.skillRegistry) return "skills not enabled";
+    const skill = this.ctx.skillRegistry.get(name);
+    if (!skill) return `skill "${name}" not found`;
+    if (this.skillState.activeSkillNames.has(name)) return `skill "${name}" already active this turn`;
+    this.skillState.activeSkills.push(skill);
+    this.skillState.activeSkillNames.add(name);
+    this.ctx.permissions.pushSkillContext(name, skill.frontmatter["allowed-tools"]);
+    return null;
   }
 
   /**
@@ -280,6 +312,9 @@ export class Agent {
   async runTurn(userInput: string | ContentPart[], abortSignal?: AbortSignal): Promise<void> {
     const turnSignal = combineSignals(abortSignal, this.ctx.abortSignal);
     this.turnAbortSignal = turnSignal;
+    // Skills(扩展接入口 §五.7):每个 user prompt 是新一轮 skill 上下文 — 清空累计激活
+    // 状态并 pop 所有 PermissionGate 临时白名单(避免上轮 skill 持续限制本轮工具)。
+    resetSkillState(this.ctx.permissions, this.skillState);
     const userMessage: Message = { role: "user", content: userInput };
     this.messages.push(userMessage);
     await this.ctx.session.append({ type: "message", time: new Date().toISOString(), message: userMessage });
@@ -394,6 +429,10 @@ export class Agent {
         .filter((p): p is { type: "text"; text: string } => p.type === "text")
         .map((p) => p.text)
         .join("");
+      // Skills 触发监听(扩展接入口 §五.7.1):扫 assistant text 中是否提到 skill name,
+      // 新触发的 skill 加入 skillState + 推 PermissionGate 临时白名单。下一轮 buildRequest
+      // 会把累计 skill 的 body 拼到 systemPrompt 尾部(易变 tail)。
+      activateSkillsFromText(assistantText, this.ctx.skillRegistry, this.ctx.permissions, this.skillState);
       const toolCalls = toolCallsToRun.map((t) => ({ id: t.id, name: t.name, args: t.args }));
       try {
         await runHooks(
@@ -467,40 +506,33 @@ export class Agent {
         services: {
           ...this.ctx.requestServices,
           todos: this.todos,
+          // Skills 注入(扩展接入口 §五.6):整体 skill 集合走稳定 prefix(短列表)。
+          // 注:即使 services 已有 skills(测试场景),agent 持有的 registry 优先(运行期单一真值)。
+          skills: this.ctx.skillRegistry?.list() ?? this.ctx.requestServices.skills,
           contextWindow: this.ctx.llm.capabilities.maxContextWindow,
           abortSignal: this.turnAbortSignal,
-          // compact 闭包:budget-guard 触发时调用。真实改写 this.messages
-          // (compact 是历史压缩,不可逆,要落到 agent state)。
-          compact: async (signal) => {
-            // I-5 联动:传 cwd 触发 facts 自动 promote 到 long-term memory
-            const result = await compactMessages(this.messages, {
-              llm: this.ctx.llm,
-              abortSignal: signal,
-              hooks: this.ctx.hooks,
-              cwd: this.ctx.cwd,
-              schema: reqSettings?.compact?.schema,
-              fallbackOnFormatFail: reqSettings?.compact?.fallbackOnFormatFail,
-              dedupPromotedFacts: reqSettings?.compact?.dedupPromotedFacts,
-              promoteFactsToMemory: reqSettings?.budgetGuard?.promoteFactsToMemory,
-            });
-            this.messages = result.newMessages;
-            // II-5 联动:把成功 promote 的 facts upsert 到 in-memory 向量索引(session 内立即可召回)
-            if (result.promotedFacts && this.ctx.requestServices?.memoryEmbeddingIndex) {
-              for (const f of result.promotedFacts) {
-                if (f.status !== "saved") continue;
-                try {
-                  await upsertMemoryEntry(this.ctx.requestServices.memoryEmbeddingIndex, f.name, "project");
-                } catch (err) {
-                  log.warn("memory index upsert (compact-promote) failed", { name: f.name, msg: (err as Error).message });
-                }
-              }
-            }
-            return this.messages;
-          },
+          // compact 闭包:budget-guard 触发时调用。实现在 src/loop/agent-compact.ts,
+          // 改写 this.messages + 触发 facts → memory promote + 向量索引 upsert。
+          // settings 字段(schema / fallback / dedup / promote)通过 deps 透传到 compactMessages。
+          compact: makeCompactClosure({
+            llm: this.ctx.llm,
+            hooks: this.ctx.hooks,
+            cwd: this.ctx.cwd,
+            memoryEmbeddingIndex: this.ctx.requestServices?.memoryEmbeddingIndex,
+            schema: reqSettings?.compact?.schema,
+            fallbackOnFormatFail: reqSettings?.compact?.fallbackOnFormatFail,
+            dedupPromotedFacts: reqSettings?.compact?.dedupPromotedFacts,
+            promoteFactsToMemory: reqSettings?.budgetGuard?.promoteFactsToMemory,
+            getMessages: () => this.messages,
+            setMessages: (m) => {
+              this.messages = m;
+            },
+          }),
         },
       });
       await this.ctx.requestPipeline.run(ctx);
-      return { systemPrompt: ctx.systemPrompt, tools: ctx.tools, messages: ctx.messages };
+      const finalSystemPrompt = appendActivatedSkillBody(ctx.systemPrompt, this.skillState);
+      return { systemPrompt: finalSystemPrompt, tools: ctx.tools, messages: ctx.messages };
     }
     // Legacy fallback
     const mode = this.ctx.permissions.getMode();
@@ -509,7 +541,8 @@ export class Agent {
     );
     const todoSection = this.todos.toPromptSection();
     const base = this.ctx.systemPrompt ?? "";
-    const systemPrompt = todoSection ? `${base}\n\n${todoSection}` : base;
+    const withTodo = todoSection ? `${base}\n\n${todoSection}` : base;
+    const systemPrompt = appendActivatedSkillBody(withTodo, this.skillState);
     return { systemPrompt, tools, messages: this.messages };
   }
 

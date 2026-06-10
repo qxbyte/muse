@@ -58,6 +58,12 @@ export interface SlashActions {
    * 编辑器进程退出码 != 0 时 reject。
    */
   openInEditor(filePath: string): Promise<void>;
+  /**
+   * Skills(扩展接入口 §五.7.2):显式触发 skill,把 body 推入 agent 的 skillState。
+   * 返回错误信息(skill 不存在 / hidden)或 null(成功)。
+   * 显式调用绕过"text 匹配"路径,disable-model-invocation=true 的也能强制触发。
+   */
+  activateSkill(name: string): string | null;
 }
 
 export interface SlashCommandContext {
@@ -70,6 +76,8 @@ export interface SlashCommandContext {
   settingsSources: string[];
   /** 用户的 models.local.json 仓库；未配置时为 undefined。 */
   modelsRegistry?: ModelsRegistry;
+  /** Skills 注册中心(扩展接入口 §五);未启用 skills 时 undefined。 */
+  skillRegistry?: import("../skills/types.js").SkillRegistry;
   history: Message[];
   tokens: SessionTokens;
   /** 注入回调：让 /help 等命令能列出全部已注册命令。 */

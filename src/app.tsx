@@ -68,6 +68,7 @@ export interface AppProps {
   settingsSources: string[];
   modelsRegistry?: ModelsRegistry;
   modelsSources: string[];
+  skillRegistry?: import("./skills/types.js").SkillRegistry;
   cwd: string;
   lang: "en" | "zh-CN";
   showBanner: boolean;
@@ -248,6 +249,7 @@ export function App({
   settings: initialSettings,
   settingsSources: initialSources,
   modelsRegistry: initialModelsRegistry,
+  skillRegistry,
   cwd,
   lang,
   showBanner,
@@ -557,6 +559,7 @@ export function App({
       session,
       cwd,
       todos,
+      skillRegistry,
       requestPipeline,
       requestServices: {
         todos,
@@ -565,6 +568,7 @@ export function App({
         memoryEmbeddingIndex,
         memoryEmbeddingTopK: settings.memory?.embedding?.topK,
         memoryEmbeddingMinCount: settings.memory?.embedding?.minMemoryCount,
+        skills: skillRegistry?.list(),
         toolRegistry: tools,
         lang,
         provider: llm.providerName,
@@ -811,6 +815,7 @@ export function App({
           // history 锁定在 /btw 触发的瞬间——后续即使主对话有新消息，/btw 看到的也是当时的快照
           setBtwRequest({ question, history: messagesRef.current, resolve });
         }),
+      activateSkill: (name) => agentRef.current?.activateSkillByName(name) ?? "agent not ready",
       openInEditor: (filePath) =>
         new Promise<void>((resolve, reject) => {
           // 让出 TTY 给外部编辑器(vi/vim/nano/code 等)。
@@ -972,6 +977,7 @@ export function App({
             settings,
             settingsSources,
             modelsRegistry,
+            skillRegistry,
             history: messagesRef.current,
             tokens: {
               inputTokens: state.inputTokens,

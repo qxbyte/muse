@@ -10,6 +10,7 @@ import type { TodoStore } from "../../loop/todos.js";
 import type { ToolRegistry } from "../../tools/registry.js";
 import type { HierarchyLayer } from "../../loop/hierarchy.js";
 import type { MemoryIndex } from "../../loop/memory-index.js";
+import type { SkillFile } from "../../skills/types.js";
 
 export interface RequestPreprocessSettings {
   trimHistory?: {
@@ -54,6 +55,12 @@ export interface RequestServices {
   todos: TodoStore;
   /** 已加载的 MEMORY.md 索引(由 app/cli 在 turn 前刷新一次后注入)。 */
   memoryIndex: string;
+  /**
+   * Skills 列表(扩展接入口 §五.6):build-system-prompt stage 注入 "Available skills" 短列表。
+   * 整体 skill 集合是稳定的(启动期加载,/skill reload 才更新),适合放进 cache friendly prefix。
+   * 激活后的 skill body 由 agent.ts 在 buildRequest 末尾拼到 tail(不进 stage)。
+   */
+  skills?: SkillFile[];
   /** 已加载的 hierarchy(MUSE.md / AGENTS.md 5 层)。II-1 引入。 */
   hierarchy?: HierarchyLayer[];
   /** 已构建的 memory 向量索引(II-5,settings.memory.embedding.enabled=true 时由 caller 注入)。 */

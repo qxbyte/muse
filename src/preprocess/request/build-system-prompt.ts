@@ -25,6 +25,8 @@ export class BuildSystemPromptStage implements PipelineStage<RequestCtx> {
       provider: ctx.services.provider,
       lang: ctx.services.lang,
       toolNames: ctx.services.toolRegistry.list().map((t) => t.name),
+      // 扩展接入口 §五.6:skill 短列表(name+description+allowed-tools)注入稳定 prefix
+      skills: ctx.services.skills,
     });
     // II-1:hierarchy(MUSE.md / AGENTS.md / local / managed)拼进稳定 prefix 段
     const hierarchyText = formatHierarchyForPrompt(ctx.services.hierarchy ?? []);

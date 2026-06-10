@@ -18,6 +18,8 @@ import { TodoStore } from "./loop/todos.js";
 import { loadMemoryIndex } from "./loop/memory.js";
 import { loadHierarchy } from "./loop/hierarchy.js";
 import { buildMemoryIndex, type MemoryIndex } from "./loop/memory-index.js";
+import { loadSkills } from "./skills/loader.js";
+import type { SkillRegistry } from "./skills/types.js";
 import { InputPipeline, createInputCtx, buildUserMessage } from "./preprocess/input/index.js";
 import { RequestPipeline } from "./preprocess/request/index.js";
 import { ResultPipeline } from "./preprocess/result/index.js";
@@ -155,6 +157,24 @@ async function main() {
       const showBanner = !opts.quiet && opts.banner !== false;
       const lang = settings.ui?.lang ?? "en";
 
+      // Skills(扩展接入口 §五):settings.skills.enabled=true 时启动期加载;
+      // 失败不阻塞 muse,errors 写 stderr
+      let skillRegistry: SkillRegistry | undefined;
+      if (settings.skills?.enabled) {
+        const { registry, errors } = await loadSkills(cwd, {
+          personalDir: settings.skills.personalDir,
+          projectDir: settings.skills.projectDir,
+          disabled: settings.skills.disabled,
+        });
+        skillRegistry = registry;
+        if (!opts.quiet) {
+          process.stderr.write(`[skills] loaded ${registry.size()} skill(s)\n`);
+          for (const e of errors) {
+            process.stderr.write(`[skills] skipped ${e.path}: ${e.reason}\n`);
+          }
+        }
+      }
+
       // Pipe input → 拼成一次性 prompt
       const pipedInput = await readStdinIfPiped();
       const oneShotPrompt = [...(promptArgs ?? []), pipedInput].filter(Boolean).join("\n").trim();
@@ -167,6 +187,7 @@ async function main() {
           session,
           settings,
           modelsRegistry,
+          skillRegistry,
           cwd,
           lang,
           prompt: oneShotPrompt,
@@ -187,6 +208,7 @@ async function main() {
           settingsSources={sources}
           modelsRegistry={modelsRegistry}
           modelsSources={modelsSources}
+          skillRegistry={skillRegistry}
           cwd={cwd}
           lang={lang}
           showBanner={showBanner}
@@ -223,6 +245,7 @@ async function runOneShot(opts: {
   session: Session;
   settings: import("./config/types.js").Settings;
   modelsRegistry?: import("./config/models.js").ModelsRegistry;
+  skillRegistry?: SkillRegistry;
   cwd: string;
   lang: "en" | "zh-CN";
   prompt: string;
@@ -323,6 +346,7 @@ async function runOneShot(opts: {
     session: opts.session,
     cwd: opts.cwd,
     todos,
+    skillRegistry: opts.skillRegistry,
     requestPipeline,
     requestServices: {
       todos,
@@ -331,6 +355,7 @@ async function runOneShot(opts: {
       memoryEmbeddingIndex,
       memoryEmbeddingTopK: opts.settings.memory?.embedding?.topK,
       memoryEmbeddingMinCount: opts.settings.memory?.embedding?.minMemoryCount,
+      skills: opts.skillRegistry?.list(),
       toolRegistry: opts.tools,
       lang: opts.lang,
       provider: opts.llm.providerName,
