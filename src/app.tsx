@@ -69,6 +69,7 @@ export interface AppProps {
   modelsRegistry?: ModelsRegistry;
   modelsSources: string[];
   skillRegistry?: import("./skills/types.js").SkillRegistry;
+  mcpManager?: import("./mcp/index.js").MCPManager;
   cwd: string;
   lang: "en" | "zh-CN";
   showBanner: boolean;
@@ -250,6 +251,7 @@ export function App({
   settingsSources: initialSources,
   modelsRegistry: initialModelsRegistry,
   skillRegistry,
+  mcpManager,
   cwd,
   lang,
   showBanner,
@@ -560,6 +562,7 @@ export function App({
       cwd,
       todos,
       skillRegistry,
+      mcpManager,
       requestPipeline,
       requestServices: {
         todos,
@@ -978,6 +981,7 @@ export function App({
             settingsSources,
             modelsRegistry,
             skillRegistry,
+            mcpManager,
             history: messagesRef.current,
             tokens: {
               inputTokens: state.inputTokens,

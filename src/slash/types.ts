@@ -78,6 +78,8 @@ export interface SlashCommandContext {
   modelsRegistry?: ModelsRegistry;
   /** Skills 注册中心(扩展接入口 §五);未启用 skills 时 undefined。 */
   skillRegistry?: import("../skills/types.js").SkillRegistry;
+  /** MCP manager(扩展接入口 §四);未配 mcpServers 时 undefined。 */
+  mcpManager?: import("../mcp/index.js").MCPManager;
   history: Message[];
   tokens: SessionTokens;
   /** 注入回调：让 /help 等命令能列出全部已注册命令。 */

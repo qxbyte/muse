@@ -9,10 +9,10 @@
 
 import type { SlashCommand, SlashCommandContext } from "./types.js";
 import { SKILL } from "./skill.js";
+import { MCP } from "./mcp.js";
 import { estimateCostUSD, formatUSD, lookupPricing } from "../llm/pricing.js";
 import { redactApiKey } from "../log/index.js";
 import { compactMessages } from "../loop/context.js";
-import { getMCPStatus } from "../mcp/index.js";
 import { Session } from "../session/jsonl.js";
 import { loadModelsRegistry, type LoadError } from "../config/models.js";
 import { shortPath, formatList, parseArgs, formatTime } from "./_format.js";
@@ -407,35 +407,6 @@ function renderConfigPaths(ctx: SlashCommandContext): string {
     `Edit any of the above, then run /config reload (no restart needed).`,
   ].join("\n");
 }
-
-// ----- /mcp -----
-
-const MCP: SlashCommand = {
-  name: "mcp",
-  description: "show MCP server status",
-  execute(ctx) {
-    const status = getMCPStatus(ctx.settings);
-    if (status.length === 0) {
-      return {
-        display:
-          `No MCP servers configured.\n` +
-          `Add servers under "mcpServers" in your settings.json.\n` +
-          `Note: MCP client integration is planned for v0.3; current /mcp only inspects configuration.`,
-      };
-    }
-    const lines = [`MCP servers (${status.length}):`];
-    for (const s of status) {
-      const indicator = s.connected ? "●" : "○";
-      lines.push(`  ${indicator} ${s.name}`);
-      lines.push(`      configured: ${s.configured}`);
-      lines.push(`      connected:  ${s.connected}${s.error ? `  (${s.error})` : ""}`);
-      if (s.connected) lines.push(`      tools:      ${s.toolCount}`);
-      if (s.config?.command) lines.push(`      command:    ${s.config.command}${s.config.args ? " " + s.config.args.join(" ") : ""}`);
-      if (s.config?.url) lines.push(`      url:        ${s.config.url}`);
-    }
-    return { display: lines.join("\n") };
-  },
-};
 
 // ----- /resume -----
 

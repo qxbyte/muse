@@ -3,20 +3,24 @@
  *
  * 设计文档:模块设计/扩展接入口/设计.md §四。
  *
- * v0.3 本期(M1):仅类型 + JSON Schema → zod helper + 旧 getMCPStatus 占位保留。
- * M2/M3/M4 将加 manager / transport / agent 路由,届时 getMCPStatus 改为实查。
+ * 接入路径:
+ *   cli.tsx / app.tsx 启动期 → new MCPManager({servers, toolRegistry}) → manager.init()
+ *   /mcp slash 拿 manager → status() 显示真实 server 状态
+ *   agent.ts 工具调用 → 名字以 mcp__* 开头 → manager.invoke()(在 registry.execute 内自然透传)
  */
 
 import type { Settings } from "../config/types.js";
 import type { MCPServerStatus, MCPServerConfig } from "./types.js";
-
-const NOT_IMPLEMENTED = "MCP manager not yet wired (M2 — planned next commit)";
+import { MCPManager } from "./manager.js";
 
 /**
- * 旧 /mcp 占位:只读 settings.mcpServers,所有 server 标 connected=false。
- * 下个 commit(M2)接 MCPManager 后,此函数会接受 manager 参数并返实查状态。
+ * /mcp slash 用此读取状态。
+ *
+ *   - 有 manager → 实查 manager.status()(连接状态、tool count、错误)
+ *   - 无 manager(legacy 路径 / 测试)→ 仅读 settings,返回 placeholder
  */
-export function getMCPStatus(settings: Settings): MCPServerStatus[] {
+export function getMCPStatus(settings: Settings, manager?: MCPManager): MCPServerStatus[] {
+  if (manager) return manager.status();
   const servers = (settings.mcpServers ?? {}) as Record<string, MCPServerConfig>;
   return Object.entries(servers).map(([name, config]) => ({
     name,
@@ -24,10 +28,21 @@ export function getMCPStatus(settings: Settings): MCPServerStatus[] {
     configured: true,
     connected: false,
     toolCount: 0,
-    error: NOT_IMPLEMENTED,
+    error: "MCP manager not initialized",
     config,
   }));
 }
+
+export { MCPManager } from "./manager.js";
+export type { MCPManagerOpts } from "./manager.js";
+export { decideMCPOrPlain } from "./agent-bridge.js";
+export type { MCPDecideInput } from "./agent-bridge.js";
+export {
+  openStdioConnection,
+  isSdkAvailable,
+  MCPSdkMissingError,
+} from "./transport-stdio.js";
+export type { MCPConnection, McpClient } from "./transport-stdio.js";
 
 export type {
   MCPServerStatus,

@@ -49,6 +49,8 @@ import {
   appendActivatedSkillBody,
   type SkillBridgeState,
 } from "../skills/agent-bridge.js";
+import type { MCPManager } from "../mcp/index.js";
+import { decideMCPOrPlain } from "../mcp/index.js";
 
 /**
  * 合并 0..N 个 AbortSignal:任一 aborted → 返回的 signal aborted。
@@ -154,6 +156,8 @@ export interface AgentContext {
   todos?: TodoStore;
   /** Skills 注册中心(扩展接入口 §五);未注入 → 不启用 skills。 */
   skillRegistry?: SkillRegistry;
+  /** MCP manager(扩展接入口 §四);未注入 → mcp__* 工具不可达,decideMCPOrPlain 走 fallback。 */
+  mcpManager?: MCPManager;
 }
 
 export class Agent {
@@ -629,7 +633,9 @@ export class Agent {
     }
 
     const summary = tool.summarize?.(call.args) ?? `${call.name}(...)`;
-    const decision: Decision = this.ctx.permissions.decide({
+    // MCP-aware decide:mcp__* 工具按 server trust(auto/ask/deny)路由;
+    // 非 MCP 工具走原 PermissionGate(零行为差异)。
+    const decision: Decision = decideMCPOrPlain(this.ctx.permissions, this.ctx.mcpManager, {
       toolName: call.name,
       args: call.args,
       permission: tool.permission,
