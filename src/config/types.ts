@@ -3,6 +3,7 @@
  */
 
 import { z } from "zod";
+import { MCPServerConfigSchema } from "../mcp/types.js";
 
 export const ProviderConfigSchema = z.object({
   apiKey: z.string().optional(),
@@ -154,7 +155,11 @@ export const SettingsSchema = z.object({
   providers: z.record(ProviderConfigSchema).optional(),
   permissions: PermissionsSchema.optional(),
   ui: UISchema.optional(),
-  mcpServers: z.record(z.unknown()).optional(),
+  /**
+   * MCP servers(模块设计/扩展接入口/设计.md §四.2)。
+   * key 为 server 名;字段对齐 Claude Desktop / Cursor / Windsurf 共识 + muse 扩展。
+   */
+  mcpServers: z.record(MCPServerConfigSchema).optional(),
   /**
    * Skills 模块设置(模块设计/扩展接入口/设计.md §五.10)。
    *
