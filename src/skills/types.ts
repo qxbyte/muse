@@ -15,8 +15,8 @@ export const SkillFrontmatterSchema = z.object({
   name: z
     .string()
     .regex(/^[a-z0-9][a-z0-9-_]*$/, "name must be kebab/snake-case alphanumeric, lowercase, start with letter/digit"),
-  /** LLM 自决依据,短而明确(10-400 字)。 */
-  description: z.string().min(10).max(400),
+  /** LLM 自决依据,短而明确(10-600 字)。 */
+  description: z.string().min(10).max(600),
   /**
    * 工具白名单;不写 = 任意可用工具都可调。
    * 写了 → skill 激活期间 PermissionGate 只放行此列表内的工具
