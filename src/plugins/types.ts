@@ -1,19 +1,17 @@
 /**
- * Plugins 模块类型骨架(P1)。
+ * Plugins 模块类型(v0.4)。
  *
- * 设计文档:模块设计/扩展接入口/设计.md §六。
+ * 设计文档:模块设计/Plugins/设计.md(承接 扩展接入口/设计.md §六 P1 骨架)。
  *
- * 范围声明(本期 v0.3 仅落骨架):
- *   - ✅ manifest schema(plugin 包 package.json 的 `muse` 字段)
- *   - ✅ settings.plugins schema(显式 opt-in enable list)
- *   - ✅ PluginContext / register 入口的类型契约(capability passing 安全模型)
- *   - ❌ loader / dynamic import / activationEvents 引擎    → v0.4
- *   - ❌ @qxbyte/muse-plugin-sdk 子包发布                  → v0.4
- *   - ❌ /plugin slash(list / install / disable / enable) → v0.4
+ * Plugin = packaging unit:把 N skills + M mcpServers + K hooks + slash commands
+ * (+ 可选 tools)打包成可分发单元(git repo / 本地目录)。加载时调 host register API
+ * 注册到现有 ToolRegistry / SkillRegistry / mcpServers / HooksConfig,自身不持运行期状态。
  *
- * Plugin = packaging unit:把 N skills + M mcpServers + K hooks + 内置 tools
- * 打包成一个 npm 包。加载时调 host 提供的 register API 把扩展元素注册到现有
- * ToolRegistry / SkillRegistry / mcpServers map / HooksConfig,自身不持运行期状态。
+ * Marketplace = catalog:plugin 之上的目录层(marketplace.json),声明有哪些 plugin、各从哪取。
+ *
+ * 取代 P1:settings 由 `plugins.enabled[]` 改为 `extraKnownMarketplaces` + `enabledPlugins`
+ * (对齐 Claude Code);manifest 由 package.json `muse` 字段改为 `.muse-plugin/plugin.json`;
+ * 去掉 activationEvents(改启动期全量加载)。
  */
 
 import { z } from "zod";
@@ -22,84 +20,174 @@ import type { SlashCommand } from "../slash/types.js";
 import type { HookPoint } from "../preprocess/hooks.js";
 
 /**
- * 主包 API 兼容标记。plugin manifest 的 `muse.apiVersion` 必须匹配此值,
- * 否则 loader 拒载(v0.4 落地)。bump 规则:host 暴露给 plugin 的 register
- * API 出现破坏性变更时 +1。
+ * 主包 API 兼容标记。plugin manifest 的 `apiVersion` 必须等于此值,否则 loader 拒载。
+ * bump 规则:host 暴露给 plugin 的 register API / manifest 契约出现破坏性变更时 +1。
  */
 export const PLUGIN_API_VERSION = "1" as const;
 
-/**
- * `settings.plugins`(设计 §八)。
- *
- * 显式 opt-in:即使 `npm i` 装了 plugin,不在 `enabled` 列表也不加载
- * (对齐 Cline / Continue 共识 — 不自动发现)。
- *
- * 本期仅校验 schema,不接 loader。
- */
-export const PluginsConfigSchema = z.object({
-  /** 启用的 plugin 包名列表(npm package name)。 */
-  enabled: z.array(z.string()).optional(),
-}).passthrough();
-
-export type PluginsConfig = z.infer<typeof PluginsConfigSchema>;
+// ============================== marketplace source ==============================
 
 /**
- * Plugin 包 package.json 的 `muse` 字段(设计 §6.3)。
- *
- * skills / mcpServers 在 manifest 声明,host 自动扫;register 主入口只用来
- * 注册 tools / slash / hooks(skills 与 mcpServers 不必触碰主代码)。
+ * marketplace 来源(`settings.extraKnownMarketplaces.<name>.source` / `/plugin marketplace add`)。
+ * 字符串简写:`owner/repo`、`owner/repo@ref`、本地路径、git URL;或显式对象。
  */
-export const PluginManifestSchema = z.object({
-  /** 主包 semver 兼容标记;不匹配 PLUGIN_API_VERSION → 拒载。 */
-  apiVersion: z.string(),
-  /** dynamic import 入口(默认回退 package.json "main")。 */
-  main: z.string().optional(),
-  /** glob,声明此 plugin 提供哪些 skills(相对 plugin 包根)。 */
-  skills: z.array(z.string()).optional(),
-  /** 此 plugin 内嵌的 MCP server 配置(与 settings.mcpServers 合并)。 */
-  mcpServers: z.record(z.unknown()).optional(),
-  /** 对齐 VSCode contributes 模式;命中才 dynamic import register fn(lazy)。 */
-  activationEvents: z.array(z.string()).optional(),
-}).passthrough();
+export const MarketplaceSourceSchema = z.union([
+  z.string(),
+  z
+    .object({
+      source: z.enum(["github", "url", "local"]),
+      repo: z.string().optional(), // github: owner/repo
+      url: z.string().optional(), // url: git url
+      path: z.string().optional(), // local: 路径
+      ref: z.string().optional(), // branch / tag
+      sha: z.string().optional(), // 精确 commit(优先于 ref)
+    })
+    .passthrough(),
+]);
+export type MarketplaceSource = z.infer<typeof MarketplaceSourceSchema>;
 
+// ============================== settings ==============================
+
+/** `settings.extraKnownMarketplaces.<name>`。 */
+export const KnownMarketplaceEntrySchema = z
+  .object({ source: MarketplaceSourceSchema })
+  .passthrough();
+export const ExtraKnownMarketplacesSchema = z.record(KnownMarketplaceEntrySchema);
+export type ExtraKnownMarketplaces = z.infer<typeof ExtraKnownMarketplacesSchema>;
+
+/**
+ * `settings.enabledPlugins`:key = `<plugin>@<marketplace>`,value = 是否启用。
+ * 显式 opt-in:不在表里(或 false)则不加载。
+ */
+export const EnabledPluginsSchema = z.record(z.boolean());
+export type EnabledPlugins = z.infer<typeof EnabledPluginsSchema>;
+
+// ============================== plugin source(marketplace.json 内)==============================
+
+/** marketplace.json 里单个 plugin 的获取源:相对路径(内联)/ github / git url。 */
+export const PluginSourceSchema = z.union([
+  z.string(), // 相对 marketplace repo 的路径(内联 plugin)
+  z
+    .object({
+      source: z.enum(["github", "url"]),
+      repo: z.string().optional(),
+      url: z.string().optional(),
+      ref: z.string().optional(),
+      sha: z.string().optional(),
+    })
+    .passthrough(),
+]);
+export type PluginSource = z.infer<typeof PluginSourceSchema>;
+
+// ============================== marketplace manifest ==============================
+
+export const MarketplacePluginEntrySchema = z
+  .object({
+    name: z.string().regex(/^[a-z0-9][a-z0-9-_]*$/),
+    source: PluginSourceSchema,
+    description: z.string().optional(),
+    version: z.string().optional(),
+    author: z.unknown().optional(),
+    category: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    defaultEnabled: z.boolean().optional(),
+  })
+  .passthrough();
+export type MarketplacePluginEntry = z.infer<typeof MarketplacePluginEntrySchema>;
+
+/** `.muse-plugin/marketplace.json`。 */
+export const MarketplaceManifestSchema = z
+  .object({
+    name: z.string().regex(/^[a-z0-9][a-z0-9-_]*$/),
+    owner: z
+      .object({ name: z.string(), email: z.string().optional() })
+      .passthrough(),
+    description: z.string().optional(),
+    version: z.string().optional(),
+    metadata: z
+      .object({ pluginRoot: z.string().optional() })
+      .passthrough()
+      .optional(),
+    plugins: z.array(MarketplacePluginEntrySchema),
+  })
+  .passthrough();
+export type MarketplaceManifest = z.infer<typeof MarketplaceManifestSchema>;
+
+// ============================== plugin manifest ==============================
+
+/**
+ * Plugin manifest(`.muse-plugin/plugin.json`)。可选 —— 无 manifest 时按目录约定推断。
+ *
+ * 组件字段(skills/commands/mcpServers/hooks)路径相对 plugin 根;省略则走默认约定目录。
+ * `main` 指向 register 入口(编程式注册 tools/slash/hooks)。
+ */
+export const PluginManifestSchema = z
+  .object({
+    apiVersion: z.string(),
+    name: z.string().regex(/^[a-z0-9][a-z0-9-_]*$/).optional(), // 省略时用目录/marketplace 条目名兜底
+    version: z.string().optional(),
+    description: z.string().optional(),
+    author: z
+      .object({ name: z.string(), email: z.string().optional(), url: z.string().optional() })
+      .passthrough()
+      .optional(),
+    homepage: z.string().optional(),
+    license: z.string().optional(),
+    keywords: z.array(z.string()).optional(),
+    defaultEnabled: z.boolean().optional(),
+    // —— 组件 ——
+    skills: z.union([z.string(), z.array(z.string())]).optional(),
+    commands: z.union([z.string(), z.array(z.string())]).optional(),
+    mcpServers: z.union([z.string(), z.record(z.unknown())]).optional(),
+    hooks: z.union([z.string(), z.record(z.unknown())]).optional(),
+    main: z.string().optional(),
+  })
+  .passthrough();
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
 
+// ============================== PluginContext(register API)==============================
+
 /**
- * 暴露给 plugin register 函数的能力集(capability passing,设计 §6.5)。
+ * 暴露给 plugin register 函数的能力集(capability passing)。
  *
- * **刻意不暴露** process.env / fs / child_process / network — plugin 要执行
- * 外部能力必须走 manifest 声明的 MCP server(子进程隔离)。这是安全模型的核心:
- * plugin 主代码只能注册声明式扩展,不能直接触碰宿主资源。
+ * **刻意不暴露** process.env / fs / child_process / network —— plugin 要执行外部能力
+ * 必须走 manifest 声明的 MCP server(子进程隔离 + PermissionGate)。
  */
 export interface PluginContext {
+  /** plugin 元信息;name 用作 slash/skill 的 namespace 前缀。 */
+  readonly plugin: { name: string; version: string; root: string; dataDir: string };
   registerTool(tool: AnyTool): void;
   registerSlash(cmd: SlashCommand): void;
   registerHook(point: HookPoint, hook: PluginHookFn): void;
   logger: PluginLogger;
 }
 
-/**
- * plugin 注册的 hook 回调。签名与 host 内部 hook 执行对齐(stdin JSON → stdout JSON),
- * 但 plugin 直接给 JS 函数而非外部 shell 命令。完整执行语义留 v0.4。
- */
+/** plugin 注册的 hook 回调(JS 函数,非外部 shell)。完整执行语义见 register 实现。 */
 export type PluginHookFn = (
   input: Record<string, unknown>,
 ) => Record<string, unknown> | void | Promise<Record<string, unknown> | void>;
 
-/**
- * plugin 主入口签名(由 manifest `main` 指向的模块 default export,设计 §6.4)。
- *
- *   export default function register(ctx: PluginContext) { ... }
- */
+/** plugin 主入口签名(manifest `main` 的 default export)。 */
 export type PluginRegisterFn = (ctx: PluginContext) => void | Promise<void>;
 
-/**
- * 给 plugin 的最小日志接口(结构子集,避免 plugin 依赖 host 内部 Logger 类)。
- */
+/** 给 plugin 的最小日志接口(避免依赖 host 内部 Logger 类)。 */
 export interface PluginLogger {
   trace(msg: string, extra?: Record<string, unknown>): void;
   debug(msg: string, extra?: Record<string, unknown>): void;
   info(msg: string, extra?: Record<string, unknown>): void;
   warn(msg: string, extra?: Record<string, unknown>): void;
   error(msg: string, extra?: Record<string, unknown>): void;
+}
+
+// ============================== loader 运行期类型 ==============================
+
+/** 加载失败记录(不阻塞启动,stderr 显示)。 */
+export interface PluginLoadError {
+  plugin: string; // <plugin>@<marketplace> 或路径
+  reason: string;
+}
+
+export interface PluginLoadResult {
+  loaded: string[]; // 成功加载的 <plugin>@<marketplace>
+  errors: PluginLoadError[];
 }

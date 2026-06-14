@@ -10,6 +10,7 @@
 import type { SlashCommand, SlashCommandContext } from "./types.js";
 import { SKILL } from "./skill.js";
 import { MCP } from "./mcp.js";
+import { PLUGIN } from "./plugin.js";
 import { estimateCostUSD, formatUSD, lookupPricing } from "../llm/pricing.js";
 import { redactApiKey } from "../log/index.js";
 import { compactMessages } from "../loop/context.js";
@@ -1072,6 +1073,7 @@ export const BUILTIN_SLASH_COMMANDS: SlashCommand[] = [
   MEMORY,
   REMEMBER,
   SKILL,
+  PLUGIN,
   MODE_CMD,
   COST,
   BTW,

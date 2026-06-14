@@ -29,7 +29,8 @@ export function skillsToSlashCommands(
   const claimed = new Set<string>();
   const taken = (n: string) => isRegistered(n) || claimed.has(n);
   for (const s of skills) {
-    let name = s.name;
+    // plugin 来源 skill 用 <plugin>: 前缀;其余撞名才加 skill: 前缀。
+    let name = s.scope === "plugin" && s.pluginName ? `${s.pluginName}:${s.name}` : s.name;
     if (taken(name)) name = `skill:${s.name}`;
     if (taken(name)) continue; // 加前缀仍冲突 → 跳过,交给 /skill run 兜底
     claimed.add(name);

@@ -1,0 +1,33 @@
+{
+  "name": "@qxbyte/muse-plugin-sdk",
+  "version": "0.1.0",
+  "description": "Type + schema contract for authoring muse plugins (零运行期依赖,纯类型 + zod schema)",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0",
+    "zod": "^3.23.8"
+  },
+  "keywords": ["muse", "plugin", "sdk"],
+  "publishConfig": {
+    "access": "public"
+  }
+}

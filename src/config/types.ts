@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 import { MCPServerConfigSchema } from "../mcp/types.js";
-import { PluginsConfigSchema } from "../plugins/types.js";
+import { ExtraKnownMarketplacesSchema, EnabledPluginsSchema } from "../plugins/types.js";
 
 export const ProviderConfigSchema = z.object({
   apiKey: z.string().optional(),
@@ -182,15 +182,16 @@ export const SettingsSchema = z.object({
     projectDir: z.string().optional(),
   }).optional(),
   /**
-   * Plugins 接入口(模块设计/扩展接入口/设计.md §六,P1 骨架)。
+   * Plugins(模块设计/Plugins/设计.md v0.4,模仿 Claude Code)。
    *
-   * 本期仅落 schema 占位 + 类型骨架(src/plugins/types.ts);loader / activationEvents
-   * 引擎 / SDK 子包发布留 v0.4(单独文档 模块设计/Plugins/设计.md)。
+   * - extraKnownMarketplaces:已知 marketplace 来源(`/plugin marketplace add` 写入)。
+   * - enabledPlugins:启用的 plugin,key = `<plugin>@<marketplace>`,显式 opt-in。
    *
-   * 显式 opt-in:即使 `npm i` 装了 plugin,不在 enabled 列表也不加载(对齐业界
-   * Cline / Continue 共识 — 不自动发现)。
+   * 取代 P1 的 `plugins.enabled[]`(从未实装功能,直接替换)。
+   * 三层 scope:user(~/.muse)/ project(.muse,入 git)/ local(.muse local)。
    */
-  plugins: PluginsConfigSchema.optional(),
+  extraKnownMarketplaces: ExtraKnownMarketplacesSchema.optional(),
+  enabledPlugins: EnabledPluginsSchema.optional(),
   hooks: HooksConfigSchema.optional(),
   preprocess: PreprocessSettingsSchema.optional(),
   /**
@@ -241,7 +242,8 @@ export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export type Permissions = z.infer<typeof PermissionsSchema>;
 export type HookSpec = z.infer<typeof HookSpecSchema>;
 export type HooksConfig = z.infer<typeof HooksConfigSchema>;
-export type PluginsConfig = z.infer<typeof PluginsConfigSchema>;
+export type ExtraKnownMarketplaces = z.infer<typeof ExtraKnownMarketplacesSchema>;
+export type EnabledPlugins = z.infer<typeof EnabledPluginsSchema>;
 export type PreprocessSettings = z.infer<typeof PreprocessSettingsSchema>;
 export type InputPreprocessSettings = z.infer<typeof InputPreprocessSettingsSchema>;
 export type RequestPreprocessSettings = z.infer<typeof RequestPreprocessSettingsSchema>;
