@@ -13,6 +13,7 @@
 import { Pipeline, type PipelineRunOptions } from "../pipeline.js";
 import { SlashDispatchStage } from "./slash-dispatch.js";
 import { PasteExpandStage, NoopPasteExpandStage } from "./paste-expand.js";
+import { AtSkillExpandStage } from "./at-skill-expand.js";
 import { AtFileExpandStage } from "./at-file-expand.js";
 import { AtImageStage } from "./at-image.js";
 import { ExpandImagePlaceholderStage, NoopExpandImagePlaceholderStage } from "./expand-image-placeholder.js";
@@ -59,6 +60,7 @@ export function InputPipeline(opts: InputPipelineOpts = {}): Pipeline<InputCtx> 
       new SlashDispatchStage(),
       pasteStage,
       imageStage,
+      new AtSkillExpandStage(),
       new AtFileExpandStage(),
       new AtImageStage(),
       new TemplateExpandStage(),

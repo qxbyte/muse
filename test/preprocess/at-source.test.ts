@@ -89,3 +89,33 @@ describe("queryAtCandidates", () => {
     expect(cands[0]?.rel).toBe("foobar.txt");
   });
 });
+
+describe("queryAtCandidates — @skill 候选(扩展接入口 §十)", () => {
+  it("匹配的 skill 排在文件候选之前,kind=skill", async () => {
+    const cands = await queryAtCandidates(workdir, "dep", ["deploy-prod", "migrate-db"]);
+    expect(cands[0]).toMatchObject({ rel: "deploy-prod", kind: "skill", isDir: false });
+  });
+
+  it("空 query 列出全部 skill(置顶)", async () => {
+    const cands = await queryAtCandidates(workdir, "", ["deploy-prod", "build"]);
+    const skillRels = cands.filter((c) => c.kind === "skill").map((c) => c.rel);
+    expect(skillRels).toEqual(expect.arrayContaining(["deploy-prod", "build"]));
+    // skill 在最前
+    expect(cands[0]?.kind).toBe("skill");
+  });
+
+  it("不传 skillNames → 无 skill 候选(行为同旧版)", async () => {
+    const cands = await queryAtCandidates(workdir, "dep");
+    expect(cands.find((c) => c.kind === "skill")).toBeUndefined();
+  });
+
+  it("query 含 / 时不出 skill 候选(skill 名无 /)", async () => {
+    const cands = await queryAtCandidates(workdir, "src/", ["deploy-prod"]);
+    expect(cands.find((c) => c.kind === "skill")).toBeUndefined();
+  });
+
+  it("不匹配的 skill 不出现", async () => {
+    const cands = await queryAtCandidates(workdir, "zzz", ["deploy-prod"]);
+    expect(cands.find((c) => c.kind === "skill")).toBeUndefined();
+  });
+});

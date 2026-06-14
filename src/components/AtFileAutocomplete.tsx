@@ -38,7 +38,7 @@ export function AtFileAutocomplete({ matches, index, maxVisible = DEFAULT_MAX }:
     <Box flexDirection="column" marginTop={1}>
       {visible.map((cand, i) => {
         const realIndex = start + i;
-        return <Row key={cand.rel} cand={cand} focused={realIndex === index} />;
+        return <Row key={`${cand.kind ?? "file"}:${cand.rel}`} cand={cand} focused={realIndex === index} />;
       })}
       <Box marginLeft={2}>
         <Text dimColor>
@@ -52,7 +52,18 @@ export function AtFileAutocomplete({ matches, index, maxVisible = DEFAULT_MAX }:
 }
 
 function Row({ cand, focused }: { cand: AtCandidate; focused: boolean }) {
-  // 显示文本:dir 加 `/` 后缀
+  // skill 候选:✦ 前缀 + (skill) 标记,与文件区分
+  if (cand.kind === "skill") {
+    return (
+      <Box flexDirection="row">
+        <Text color={focused ? FOCUS_COLOR : undefined} bold={focused}>
+          {"✦ "}{cand.rel}
+        </Text>
+        <Text dimColor>{"  (skill)"}</Text>
+      </Box>
+    );
+  }
+  // 文件 / 目录:dir 加 `/` 后缀
   const display = cand.isDir ? `${cand.rel}/` : cand.rel;
   return (
     <Box flexDirection="row">

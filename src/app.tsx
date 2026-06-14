@@ -58,6 +58,7 @@ import {
   type SlashCommand,
   type SlashCommandResult,
 } from "./slash/index.js";
+import { skillsToSlashCommands } from "./slash/skill-commands.js";
 
 export interface AppProps {
   llm: LLMClient;
@@ -360,8 +361,12 @@ export function App({
   const slash = useMemo(() => {
     const r = new SlashRegistry();
     r.registerAll(BUILTIN_SLASH_COMMANDS);
+    // 每个 skill 注册成一条 /<name>(扩展接入口 §五.7;撞内置名加 skill: 前缀)。
+    if (skillRegistry) {
+      r.registerAll(skillsToSlashCommands(skillRegistry.list(), (n) => r.get(n) !== undefined));
+    }
     return r;
-  }, []);
+  }, [skillRegistry]);
 
   // input.startsWith("/") && 命令名阶段（无空格）→ 显示匹配候选
   const autocomplete = useMemo<{ matches: SlashCommand[]; query: string } | null>(() => {
@@ -403,13 +408,15 @@ export function App({
 
   const [atMatches, setAtMatches] = useState<AtCandidate[]>([]);
   const [atIndex, setAtIndex] = useState(0);
+  // @skill mention(扩展接入口 §十):已加载 skill 名,供 @ 候选置顶 + 提交期激活检测。
+  const skillNames = useMemo(() => skillRegistry?.list().map((s) => s.name), [skillRegistry]);
   useEffect(() => {
     if (atQuery === null) {
       setAtMatches([]);
       return;
     }
     let cancelled = false;
-    queryAtCandidates(cwd, atQuery)
+    queryAtCandidates(cwd, atQuery, skillNames)
       .then((cands) => {
         if (!cancelled) setAtMatches(cands);
       })
@@ -419,7 +426,7 @@ export function App({
     return () => {
       cancelled = true;
     };
-  }, [atQuery, cwd]);
+  }, [atQuery, cwd, skillNames]);
   useEffect(() => {
     if (atIndex >= atMatches.length) setAtIndex(0);
   }, [atMatches, atIndex]);
@@ -818,7 +825,13 @@ export function App({
           // history 锁定在 /btw 触发的瞬间——后续即使主对话有新消息，/btw 看到的也是当时的快照
           setBtwRequest({ question, history: messagesRef.current, resolve });
         }),
-      activateSkill: (name) => agentRef.current?.activateSkillByName(name) ?? "agent not ready",
+      activateSkill: async (name) => {
+        const agent = agentRef.current;
+        if (!agent) return "agent not ready";
+        // 注意:activateSkillByName 成功返回 null,不能用 `?? "agent not ready"`
+        // 兜底(null 会被误判成错误);只在 agent 未就绪时返回该串。
+        return agent.activateSkillByName(name);
+      },
       openInEditor: (filePath) =>
         new Promise<void>((resolve, reject) => {
           // 让出 TTY 给外部编辑器(vi/vim/nano/code 等)。
@@ -915,6 +928,7 @@ export function App({
         mode: permissions.getMode(),
         settings: settings.preprocess?.input,
         capabilities: { supportsImages: activeEntry?.supportsImages ?? false },
+        skillNames,
       });
       const pipeline = InputPipeline({
         pasteRegistry: pasteRegistryRef.current.map,
@@ -934,6 +948,19 @@ export function App({
       if (inputCtx.warnings.length > 0) {
         const msg = inputCtx.warnings.map((w) => `[${w.stage}] ${w.message}`).join("\n");
         appendAssistantText(msg);
+      }
+
+      // @skill mention(扩展接入口 §十):at-skill-expand 检测到的 skill 显式激活
+      // (等价 /skill run,绕过 LLM 自决;允许 hidden skill)。slash 路径不涉及。
+      if (!inputCtx.slashCommand && inputCtx.skillActivations.length > 0) {
+        const agent = agentRef.current;
+        const notes: string[] = [];
+        for (const name of inputCtx.skillActivations) {
+          // null=成功,不能用 `?? "agent not ready"`(会把成功误判为错误);分别处理。
+          const reason = agent ? await agent.activateSkillByName(name) : "agent not ready";
+          notes.push(reason ? `✦ skill "${name}" not activated: ${reason}` : `✦ skill "${name}" activated`);
+        }
+        if (notes.length > 0) appendAssistantText(notes.join("\n"));
       }
 
       // UserPromptSubmit hook:slash 命令不触发(slash 走系统自处理路径,不上 LLM)

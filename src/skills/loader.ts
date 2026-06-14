@@ -19,6 +19,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import fg from "fast-glob";
 import { parseSkillFile } from "./parser.js";
 import type {
   SkillFile,
@@ -55,7 +56,41 @@ export async function loadSkills(cwd: string, opts: LoadSkillsOpts = {}): Promis
     skills.set(file.name, file);
   }
 
-  return { registry: makeRegistry([...skills.values()]), errors };
+  // glob 自动挂载求值(扩展接入口 §十):一次性按 cwd 算 mounted,避免每轮重 glob。
+  const files = [...skills.values()];
+  await applyGlobMounts(files, cwd);
+
+  return { registry: makeRegistry(files), errors };
+}
+
+/** fast-glob 默认排除(与 at-source 一致)。 */
+const GLOB_IGNORE = ["**/node_modules/**", "**/.git/**"];
+
+/**
+ * 给每个 skill 算 mounted:无 globs → true;有 globs 且 cwd 命中 → true,否则 false。
+ * glob 求值失败(异常)→ 保守标 true(宁可多显示,不静默吞 skill)。
+ */
+export async function applyGlobMounts(files: SkillFile[], cwd: string): Promise<void> {
+  for (const f of files) {
+    const globs = f.frontmatter.globs;
+    if (!globs || globs.length === 0) {
+      f.mounted = true;
+      continue;
+    }
+    try {
+      const hits = await fg(globs, {
+        cwd,
+        dot: true,
+        onlyFiles: false,
+        followSymbolicLinks: false,
+        suppressErrors: true,
+        ignore: GLOB_IGNORE,
+      });
+      f.mounted = hits.length > 0;
+    } catch {
+      f.mounted = true;
+    }
+  }
 }
 
 export function defaultPersonalDir(): string {

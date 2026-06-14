@@ -69,6 +69,45 @@ describe("loadSkills — 基础", () => {
   });
 });
 
+describe("loadSkills — glob 自动挂载(扩展接入口 §十)", () => {
+  function globSkill(name: string, globs: string): string {
+    return `---\nname: ${name}\ndescription: ten or more chars description\nglobs: ${globs}\n---\nbody of ${name}`;
+  }
+
+  it("无 globs → mounted=true", async () => {
+    await writeSkill(personalDir, "always", skillContent("always"));
+    const { registry } = await loadSkills("/tmp", { personalDir, projectDir });
+    expect(registry.get("always")?.mounted).toBe(true);
+  });
+
+  it("globs 命中 cwd 文件 → mounted=true", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "muse-cwd-"));
+    await writeFile(join(cwd, "main.tf"), "");
+    await writeSkill(personalDir, "tf", globSkill("tf", '["**/*.tf"]'));
+    const { registry } = await loadSkills(cwd, { personalDir, projectDir });
+    expect(registry.get("tf")?.mounted).toBe(true);
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it("globs 未命中 → mounted=false", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "muse-cwd-"));
+    await writeFile(join(cwd, "readme.md"), "");
+    await writeSkill(personalDir, "tf", globSkill("tf", '["**/*.tf"]'));
+    const { registry } = await loadSkills(cwd, { personalDir, projectDir });
+    expect(registry.get("tf")?.mounted).toBe(false);
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  it("精确文件名 glob 命中(如 Dockerfile)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "muse-cwd-"));
+    await writeFile(join(cwd, "Dockerfile"), "");
+    await writeSkill(personalDir, "docker", globSkill("docker", '["Dockerfile"]'));
+    const { registry } = await loadSkills(cwd, { personalDir, projectDir });
+    expect(registry.get("docker")?.mounted).toBe(true);
+    await rm(cwd, { recursive: true, force: true });
+  });
+});
+
 describe("loadSkills — 作用域覆盖", () => {
   it("project 同名 skill 覆盖 personal", async () => {
     await writeSkill(personalDir, "deploy", skillContent("deploy", "personal version description here"));

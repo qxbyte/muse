@@ -103,14 +103,24 @@ body`;
     expect(() => parseSkillFile(raw)).toThrow(/description/);
   });
 
-  it("throws on description too long(>400 chars)", () => {
-    const longDesc = "x".repeat(401);
+  it("throws on description too long(>600 chars)", () => {
+    const longDesc = "x".repeat(601);
     const raw = `---
 name: x
 description: ${longDesc}
 ---
 body`;
     expect(() => parseSkillFile(raw)).toThrow(/description/);
+  });
+
+  it("accepts description between 400 and 600 chars", () => {
+    const desc = "x".repeat(500);
+    const raw = `---
+name: x
+description: ${desc}
+---
+body`;
+    expect(() => parseSkillFile(raw)).not.toThrow();
   });
 
   it("throws on missing required field name", () => {

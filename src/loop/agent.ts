@@ -45,6 +45,7 @@ import type { SkillRegistry } from "../skills/types.js";
 import {
   createSkillBridgeState,
   activateSkillsFromText,
+  fireSkillActivateHook,
   resetSkillState,
   appendActivatedSkillBody,
   type SkillBridgeState,
@@ -229,13 +230,16 @@ export class Agent {
   /**
    * Skills(扩展接入口 §五.7.2):显式触发 skill,绕过 LLM 自决文本匹配路径。
    * disable-model-invocation=true 的 skill 也允许显式触发。
-   * 返回 null=成功,string=错误原因(skill 不存在 / registry 未注入 / 已激活)。
+   * SkillActivate hook(§五.9)同样在此触发,可 block(返回其 reason)。
+   * 返回 null=成功,string=错误原因(skill 不存在 / registry 未注入 / 已激活 / 被 hook block)。
    */
-  activateSkillByName(name: string): string | null {
+  async activateSkillByName(name: string): Promise<string | null> {
     if (!this.ctx.skillRegistry) return "skills not enabled";
     const skill = this.ctx.skillRegistry.get(name);
     if (!skill) return `skill "${name}" not found`;
     if (this.skillState.activeSkillNames.has(name)) return `skill "${name}" already active this turn`;
+    const blocked = await fireSkillActivateHook(skill, this.ctx.hooks, this.ctx.hookLogger);
+    if (blocked) return `blocked by SkillActivate hook: ${blocked}`;
     this.skillState.activeSkills.push(skill);
     this.skillState.activeSkillNames.add(name);
     this.ctx.permissions.pushSkillContext(name, skill.frontmatter["allowed-tools"]);
@@ -436,7 +440,15 @@ export class Agent {
       // Skills 触发监听(扩展接入口 §五.7.1):扫 assistant text 中是否提到 skill name,
       // 新触发的 skill 加入 skillState + 推 PermissionGate 临时白名单。下一轮 buildRequest
       // 会把累计 skill 的 body 拼到 systemPrompt 尾部(易变 tail)。
-      activateSkillsFromText(assistantText, this.ctx.skillRegistry, this.ctx.permissions, this.skillState);
+      // SkillActivate hook(§五.9)在此触发,可 block 单个 skill 的激活。
+      await activateSkillsFromText(
+        assistantText,
+        this.ctx.skillRegistry,
+        this.ctx.permissions,
+        this.skillState,
+        this.ctx.hooks,
+        this.ctx.hookLogger,
+      );
       const toolCalls = toolCallsToRun.map((t) => ({ id: t.id, name: t.name, args: t.args }));
       try {
         await runHooks(

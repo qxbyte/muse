@@ -1,6 +1,6 @@
 {
   "name": "@qxbyte/muse",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript agent CLI with built-in permission gating, long-term memory (project + user dual-scope) and optional vector recall (OpenAI / DashScope / Zhipu / Ollama / local-transformers). First-class support for self-hostable and Chinese LLMs (DeepSeek, Qwen, Kimi, GLM, Ollama, MiMo).",
   "type": "module",
   "license": "MIT",

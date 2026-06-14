@@ -15,8 +15,8 @@ export const SkillFrontmatterSchema = z.object({
   name: z
     .string()
     .regex(/^[a-z0-9][a-z0-9-_]*$/, "name must be kebab/snake-case alphanumeric, lowercase, start with letter/digit"),
-  /** LLM 自决依据,短而明确(10-400 字)。 */
-  description: z.string().min(10).max(400),
+  /** LLM 自决依据,短而明确(10-600 字)。 */
+  description: z.string().min(10).max(600),
   /**
    * 工具白名单;不写 = 任意可用工具都可调。
    * 写了 → skill 激活期间 PermissionGate 只放行此列表内的工具
@@ -31,6 +31,14 @@ export const SkillFrontmatterSchema = z.object({
   "disable-model-invocation": z.boolean().optional(),
   /** 触发关键词;与 description 一起决定 LLM 自决匹配权重(本期实装暂不用,留 v0.3.x)。 */
   triggers: z.array(z.string()).optional(),
+  /**
+   * 自动挂载 glob(扩展接入口 §十 v0.3.x;对齐 Cursor auto-attached rules)。
+   * 写了 → 该 skill 仅当 cwd 内存在匹配 glob 的文件时才进 "Available skills" 段(供 LLM 自决);
+   * 不写 → 永远在 Available skills(现行为)。
+   * 无论是否挂载,`/skill run` 与 `@skill` 显式触发都不受影响。
+   * glob 相对项目 cwd,如匹配 Terraform 文件(双星斜杠星点 tf)或 ["Dockerfile"]。
+   */
+  globs: z.array(z.string()).optional(),
 }).passthrough();
 
 export type SkillFrontmatter = z.infer<typeof SkillFrontmatterSchema>;
@@ -48,6 +56,13 @@ export interface SkillFile {
   /** skill 目录绝对路径(SKILL.md 所在目录;可放 scripts/ templates/ 等辅助文件)。 */
   dirPath: string;
   scope: SkillScope;
+  /**
+   * 是否自动挂载(扩展接入口 §十)。loader 加载期按 frontmatter.globs 对 cwd 求值:
+   *   - 无 globs → true(永远进 Available skills)
+   *   - 有 globs 且 cwd 命中 → true;未命中 → false(从 Available skills 隐藏)
+   * undefined 视同 true(向后兼容未经 glob 求值的 SkillFile)。
+   */
+  mounted?: boolean;
 }
 
 /** SkillRegistry 对外接口(immutable 视图)。 */

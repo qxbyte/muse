@@ -18,10 +18,10 @@ import type { PermissionLevel } from "../tools/types.js";
 import { log } from "../log/index.js";
 import { jsonSchemaToZod } from "./zod-from-jsonschema.js";
 import {
-  openStdioConnection,
+  openConnection,
   MCPSdkMissingError,
   type MCPConnection,
-} from "./transport-stdio.js";
+} from "./transport.js";
 import type { MCPServerConfig, MCPServerStatus } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -184,7 +184,7 @@ export class MCPManager {
     const state = this.servers.get(name);
     if (!state) throw new Error(`MCP server "${name}" not configured`);
     try {
-      state.connection = await openStdioConnection(name, state.config);
+      state.connection = await openConnection(name, state.config);
       state.connected = true;
       state.error = undefined;
       await this.registerTools(state);

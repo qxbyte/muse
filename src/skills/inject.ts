@@ -14,7 +14,11 @@ import type { SkillFile } from "./types.js";
 
 /** 短列表:供 LLM 自决参考(token 开销 ~50-100 per skill)。 */
 export function renderAvailableSkillsSection(skills: SkillFile[]): string {
-  const invocable = skills.filter((s) => !s.frontmatter["disable-model-invocation"]);
+  // 过滤:hidden(disable-model-invocation)+ 未挂载的 glob skill(mounted===false)。
+  // mounted===undefined 视同已挂载(向后兼容未经 glob 求值的 SkillFile)。
+  const invocable = skills.filter(
+    (s) => !s.frontmatter["disable-model-invocation"] && s.mounted !== false,
+  );
   if (invocable.length === 0) return "";
 
   const lines: string[] = [];

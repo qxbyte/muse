@@ -38,19 +38,22 @@ export type { MCPManagerOpts } from "./manager.js";
 export { decideMCPOrPlain } from "./agent-bridge.js";
 export type { MCPDecideInput } from "./agent-bridge.js";
 export {
-  openStdioConnection,
+  openConnection,
   isSdkAvailable,
   MCPSdkMissingError,
-} from "./transport-stdio.js";
-export type { MCPConnection, McpClient } from "./transport-stdio.js";
+} from "./transport.js";
+export type { MCPConnection, McpClient } from "./transport.js";
+export { openStdioConnection } from "./transport-stdio.js";
+export { openHttpConnection } from "./transport-http.js";
 
 export type {
   MCPServerStatus,
   MCPServerConfig,
+  MCPTransportKind,
   MCPToolResult,
   MCPToolDef,
   MCPTrust,
 } from "./types.js";
-export { MCPServerConfigSchema } from "./types.js";
+export { MCPServerConfigSchema, resolveTransportKind } from "./types.js";
 
 export { jsonSchemaToZod } from "./zod-from-jsonschema.js";

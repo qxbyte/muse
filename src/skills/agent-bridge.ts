@@ -12,6 +12,9 @@ import type { PermissionGate } from "../permission/index.js";
 import { detectSkillTriggers } from "./trigger.js";
 import { renderActivatedSkillBody } from "./inject.js";
 import type { SkillFile, SkillRegistry } from "./types.js";
+import { runHooks, type HooksConfig } from "../preprocess/hooks.js";
+import { PipelineBlockedError } from "../preprocess/pipeline.js";
+import type { PreprocessLogger } from "../preprocess/types.js";
 
 export interface SkillBridgeState {
   /** 已激活的 skill(按触发顺序保 body 拼接稳定)。 */
@@ -26,21 +29,56 @@ export function createSkillBridgeState(): SkillBridgeState {
 }
 
 /**
+ * 触发 SkillActivate hook(扩展接入口 §五.9)。
+ * payload `{ skillName, scope, allowedTools }`,matcher 比 skillName。
+ * 返回 null=放行,string=被 hook block 的原因(调用方据此跳过激活 / 报错)。
+ * 无 hook 配置 → 直接放行(零开销)。
+ */
+export async function fireSkillActivateHook(
+  skill: SkillFile,
+  hooks: HooksConfig | undefined,
+  logger?: PreprocessLogger,
+): Promise<string | null> {
+  if (!hooks?.SkillActivate || hooks.SkillActivate.length === 0) return null;
+  try {
+    await runHooks(
+      "SkillActivate",
+      {
+        skillName: skill.name,
+        scope: skill.scope,
+        allowedTools: skill.frontmatter["allowed-tools"] ?? [],
+      },
+      hooks,
+      logger,
+    );
+    return null;
+  } catch (err) {
+    if (err instanceof PipelineBlockedError) return err.reason;
+    throw err;
+  }
+}
+
+/**
  * 扫一段 LLM 输出文本,激活新匹配的 skill:
  *   1. detectSkillTriggers 找候选(已激活的 skill 自动跳过)
- *   2. 加入 state + 推 PermissionGate 临时白名单
+ *   2. SkillActivate hook(可 block → 跳过该 skill)
+ *   3. 加入 state + 推 PermissionGate 临时白名单
  *
  * 无 registry 或空 text → no-op。
  */
-export function activateSkillsFromText(
+export async function activateSkillsFromText(
   text: string,
   registry: SkillRegistry | undefined,
   permissions: PermissionGate,
   state: SkillBridgeState,
-): void {
+  hooks?: HooksConfig,
+  logger?: PreprocessLogger,
+): Promise<void> {
   if (!registry || !text) return;
   const triggered = detectSkillTriggers(text, registry, state.activeSkillNames);
   for (const s of triggered) {
+    const blocked = await fireSkillActivateHook(s, hooks, logger);
+    if (blocked) continue;
     state.activeSkills.push(s);
     state.activeSkillNames.add(s.name);
     permissions.pushSkillContext(s.name, s.frontmatter["allowed-tools"]);

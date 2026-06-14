@@ -54,59 +54,59 @@ function mkCtx(args: string, registry?: SkillRegistry, activateResult: string | 
 }
 
 describe("/skill list", () => {
-  it("registry undefined → 提示 not enabled", () => {
-    const result = SKILL.execute(mkCtx(""));
+  it("registry undefined → 提示 not enabled", async () => {
+    const result = await SKILL.execute(mkCtx(""));
     expect((result as { display: string }).display).toMatch(/Skills not enabled/);
   });
 
-  it("空 registry → 给配置提示", () => {
-    const result = SKILL.execute(mkCtx("", mkRegistry([])));
+  it("空 registry → 给配置提示", async () => {
+    const result = await SKILL.execute(mkCtx("", mkRegistry([])));
     expect((result as { display: string }).display).toMatch(/No skills found/);
   });
 
-  it("默认无参 = list", () => {
-    const result = SKILL.execute(mkCtx("", mkRegistry([mkSkill("deploy")])));
+  it("默认无参 = list", async () => {
+    const result = await SKILL.execute(mkCtx("", mkRegistry([mkSkill("deploy")])));
     expect((result as { display: string }).display).toContain("deploy");
     expect((result as { display: string }).display).toContain("Skills (1 total)");
   });
 
-  it("显式 list", () => {
-    const result = SKILL.execute(mkCtx("list", mkRegistry([mkSkill("deploy"), mkSkill("migrate")])));
+  it("显式 list", async () => {
+    const result = await SKILL.execute(mkCtx("list", mkRegistry([mkSkill("deploy"), mkSkill("migrate")])));
     expect((result as { display: string }).display).toContain("deploy");
     expect((result as { display: string }).display).toContain("migrate");
   });
 
-  it("project scope 排在 personal 之前", () => {
+  it("project scope 排在 personal 之前", async () => {
     const skills = [
       mkSkill("from-personal", { scope: "personal" }),
       mkSkill("from-project", { scope: "project" }),
     ];
-    const result = SKILL.execute(mkCtx("list", mkRegistry(skills)));
+    const result = await SKILL.execute(mkCtx("list", mkRegistry(skills)));
     const text = (result as { display: string }).display;
     const idxProj = text.indexOf("from-project");
     const idxPers = text.indexOf("from-personal");
     expect(idxProj).toBeLessThan(idxPers);
   });
 
-  it("hidden(disable-model-invocation=true)标 [hidden]", () => {
-    const result = SKILL.execute(mkCtx("list", mkRegistry([mkSkill("secret", { hidden: true })])));
+  it("hidden(disable-model-invocation=true)标 [hidden]", async () => {
+    const result = await SKILL.execute(mkCtx("list", mkRegistry([mkSkill("secret", { hidden: true })])));
     expect((result as { display: string }).display).toContain("[hidden]");
   });
 });
 
 describe("/skill info", () => {
-  it("缺 name → usage", () => {
-    const result = SKILL.execute(mkCtx("info", mkRegistry([mkSkill("deploy")])));
+  it("缺 name → usage", async () => {
+    const result = await SKILL.execute(mkCtx("info", mkRegistry([mkSkill("deploy")])));
     expect((result as { display: string }).display).toMatch(/Usage/);
   });
 
-  it("name 不存在 → 提示", () => {
-    const result = SKILL.execute(mkCtx("info nonexistent", mkRegistry([mkSkill("deploy")])));
+  it("name 不存在 → 提示", async () => {
+    const result = await SKILL.execute(mkCtx("info nonexistent", mkRegistry([mkSkill("deploy")])));
     expect((result as { display: string }).display).toMatch(/not found/);
   });
 
-  it("显示 frontmatter + body", () => {
-    const result = SKILL.execute(mkCtx("info deploy", mkRegistry([mkSkill("deploy", { allowed: ["Bash"] })])));
+  it("显示 frontmatter + body", async () => {
+    const result = await SKILL.execute(mkCtx("info deploy", mkRegistry([mkSkill("deploy", { allowed: ["Bash"] })])));
     const text = (result as { display: string }).display;
     expect(text).toContain("# deploy");
     expect(text).toContain("Bash");
@@ -115,26 +115,26 @@ describe("/skill info", () => {
 });
 
 describe("/skill run", () => {
-  it("缺 name → usage", () => {
-    const result = SKILL.execute(mkCtx("run", mkRegistry([mkSkill("deploy")])));
+  it("缺 name → usage", async () => {
+    const result = await SKILL.execute(mkCtx("run", mkRegistry([mkSkill("deploy")])));
     expect((result as { display: string }).display).toMatch(/Usage/);
   });
 
-  it("成功 → 提示已激活", () => {
-    const result = SKILL.execute(mkCtx("run deploy", mkRegistry([mkSkill("deploy")]), null));
+  it("成功 → 提示已激活", async () => {
+    const result = await SKILL.execute(mkCtx("run deploy", mkRegistry([mkSkill("deploy")]), null));
     expect((result as { display: string }).display).toContain("activated");
   });
 
-  it("失败 → 透传 reason", () => {
-    const result = SKILL.execute(mkCtx("run deploy", mkRegistry([mkSkill("deploy")]), "skill \"deploy\" not found"));
+  it("失败 → 透传 reason", async () => {
+    const result = await SKILL.execute(mkCtx("run deploy", mkRegistry([mkSkill("deploy")]), "skill \"deploy\" not found"));
     expect((result as { display: string }).display).toContain("Failed to activate");
     expect((result as { display: string }).display).toContain("not found");
   });
 });
 
 describe("/skill 未知子命令", () => {
-  it("回 usage", () => {
-    const result = SKILL.execute(mkCtx("garbage", mkRegistry([])));
+  it("回 usage", async () => {
+    const result = await SKILL.execute(mkCtx("garbage", mkRegistry([])));
     expect((result as { display: string }).display).toMatch(/Usage/);
   });
 });
