@@ -43,7 +43,7 @@ export const SkillFrontmatterSchema = z.object({
 
 export type SkillFrontmatter = z.infer<typeof SkillFrontmatterSchema>;
 
-export type SkillScope = "personal" | "project";
+export type SkillScope = "personal" | "project" | "plugin";
 
 /** 解析后的 SKILL.md。 */
 export interface SkillFile {
@@ -56,6 +56,8 @@ export interface SkillFile {
   /** skill 目录绝对路径(SKILL.md 所在目录;可放 scripts/ templates/ 等辅助文件)。 */
   dirPath: string;
   scope: SkillScope;
+  /** scope=plugin 时来源 plugin 名(用于 `<plugin>:` namespace);其他 scope 为 undefined。 */
+  pluginName?: string;
   /**
    * 是否自动挂载(扩展接入口 §十)。loader 加载期按 frontmatter.globs 对 cwd 求值:
    *   - 无 globs → true(永远进 Available skills)

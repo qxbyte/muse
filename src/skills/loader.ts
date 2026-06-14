@@ -36,6 +36,8 @@ export interface LoadSkillsOpts {
   projectDir?: string;
   /** settings.skills.disabled — 黑名单。 */
   disabled?: string[];
+  /** plugin 贡献的 skills(scope=plugin);优先级最低,被 personal/project 同名覆盖。 */
+  pluginSkills?: SkillFile[];
 }
 
 export async function loadSkills(cwd: string, opts: LoadSkillsOpts = {}): Promise<SkillLoadResult> {
@@ -45,7 +47,12 @@ export async function loadSkills(cwd: string, opts: LoadSkillsOpts = {}): Promis
   const errors: SkillLoadError[] = [];
   const skills = new Map<string, SkillFile>();
 
-  // 先扫 personal(可被 project 覆盖)
+  // plugin 层最先(优先级最低,可被 personal/project 同名覆盖)
+  for (const file of opts.pluginSkills ?? []) {
+    if (disabled.has(file.name)) continue;
+    skills.set(file.name, file);
+  }
+  // 再扫 personal(可被 project 覆盖)
   for (const file of await scanScopeDir(personalDir, "personal", errors)) {
     if (disabled.has(file.name)) continue;
     skills.set(file.name, file);

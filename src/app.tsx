@@ -70,6 +70,8 @@ export interface AppProps {
   modelsRegistry?: ModelsRegistry;
   modelsSources: string[];
   skillRegistry?: import("./skills/types.js").SkillRegistry;
+  /** plugin 经 main register 贡献的 slash 命令(已 <plugin>: namespace);Plugins v0.4。 */
+  pluginSlashCommands?: SlashCommand[];
   mcpManager?: import("./mcp/index.js").MCPManager;
   cwd: string;
   lang: "en" | "zh-CN";
@@ -252,6 +254,7 @@ export function App({
   settingsSources: initialSources,
   modelsRegistry: initialModelsRegistry,
   skillRegistry,
+  pluginSlashCommands,
   mcpManager,
   cwd,
   lang,
@@ -365,8 +368,13 @@ export function App({
     if (skillRegistry) {
       r.registerAll(skillsToSlashCommands(skillRegistry.list(), (n) => r.get(n) !== undefined));
     }
+    // plugin 经 main register 贡献的 slash(Plugins v0.4;已 <plugin>: namespace,撞名跳过)。
+    for (const cmd of pluginSlashCommands ?? []) {
+      if (r.get(cmd.name)) continue;
+      r.register(cmd);
+    }
     return r;
-  }, [skillRegistry]);
+  }, [skillRegistry, pluginSlashCommands]);
 
   // input.startsWith("/") && 命令名阶段（无空格）→ 显示匹配候选
   const autocomplete = useMemo<{ matches: SlashCommand[]; query: string } | null>(() => {

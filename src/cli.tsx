@@ -19,7 +19,10 @@ import { loadMemoryIndex } from "./loop/memory.js";
 import { loadHierarchy } from "./loop/hierarchy.js";
 import { buildMemoryIndex, type MemoryIndex } from "./loop/memory-index.js";
 import { loadSkills } from "./skills/loader.js";
-import type { SkillRegistry } from "./skills/types.js";
+import type { SkillRegistry, SkillFile } from "./skills/types.js";
+import { loadEnabledPlugins } from "./plugins/index.js";
+import type { HooksConfig } from "./config/types.js";
+import type { SlashCommand } from "./slash/types.js";
 import { MCPManager } from "./mcp/index.js";
 import { InputPipeline, createInputCtx, buildUserMessage } from "./preprocess/input/index.js";
 import { RequestPipeline } from "./preprocess/request/index.js";
@@ -29,6 +32,16 @@ import { PipelineBlockedError } from "./preprocess/pipeline.js";
 import { MuseError } from "./types/index.js";
 import { log } from "./log/index.js";
 import { VERSION } from "./version.js";
+
+/** 把 plugin 贡献的 hooks 链式并入 settings.hooks(同 point concat)。 */
+function mergeHooksConfig(base: HooksConfig | undefined, add: HooksConfig): HooksConfig {
+  const out = { ...(base ?? {}) } as Record<string, unknown[]>;
+  for (const [point, specs] of Object.entries(add)) {
+    if (!specs) continue;
+    out[point] = [...(out[point] ?? []), ...(specs as unknown[])];
+  }
+  return out as HooksConfig;
+}
 
 async function main() {
   const program = new Command();
@@ -158,14 +171,49 @@ async function main() {
       const showBanner = !opts.quiet && opts.banner !== false;
       const lang = settings.ui?.lang ?? "en";
 
-      // Skills(扩展接入口 §五):settings.skills.enabled=true 时启动期加载;
+      // Plugins(模块设计/Plugins/设计.md v0.4):启动期全量加载已启用 plugin。
+      // 贡献的 skills 进 skill 层、mcpServers 并入 settings、hooks 并入 settings、
+      // tools 注册进 ToolRegistry、slash 传给 App。失败不阻塞。
+      let pluginSlashCommands: SlashCommand[] = [];
+      const pluginSkills: SkillFile[] = [];
+      if (settings.enabledPlugins && Object.values(settings.enabledPlugins).some(Boolean)) {
+        const { contributions, result } = await loadEnabledPlugins({
+          enabledPlugins: settings.enabledPlugins,
+          cwd,
+          logger: log,
+        });
+        pluginSkills.push(...contributions.skills);
+        pluginSlashCommands = contributions.slash;
+        if (Object.keys(contributions.mcpServers).length > 0) {
+          settings.mcpServers = { ...(settings.mcpServers ?? {}), ...contributions.mcpServers };
+        }
+        if (Object.keys(contributions.hooks).length > 0) {
+          settings.hooks = mergeHooksConfig(settings.hooks, contributions.hooks);
+        }
+        for (const t of contributions.tools) {
+          if (tools.has(t.name)) {
+            log.warn(`[plugins] tool "${t.name}" already registered; skipped`);
+            continue;
+          }
+          tools.register(t);
+        }
+        if (!opts.quiet) {
+          process.stderr.write(`[plugins] loaded ${result.loaded.length} plugin(s)\n`);
+          for (const e of result.errors) {
+            process.stderr.write(`[plugins] ${e.plugin}: ${e.reason}\n`);
+          }
+        }
+      }
+
+      // Skills(扩展接入口 §五):settings.skills.enabled=true 或有 plugin 贡献的 skills 时加载。
       // 失败不阻塞 muse,errors 写 stderr
       let skillRegistry: SkillRegistry | undefined;
-      if (settings.skills?.enabled) {
+      if (settings.skills?.enabled || pluginSkills.length > 0) {
         const { registry, errors } = await loadSkills(cwd, {
-          personalDir: settings.skills.personalDir,
-          projectDir: settings.skills.projectDir,
-          disabled: settings.skills.disabled,
+          personalDir: settings.skills?.personalDir,
+          projectDir: settings.skills?.projectDir,
+          disabled: settings.skills?.disabled,
+          pluginSkills,
         });
         skillRegistry = registry;
         if (!opts.quiet) {
@@ -224,6 +272,7 @@ async function main() {
           modelsRegistry={modelsRegistry}
           modelsSources={modelsSources}
           skillRegistry={skillRegistry}
+          pluginSlashCommands={pluginSlashCommands}
           mcpManager={mcpManager}
           cwd={cwd}
           lang={lang}

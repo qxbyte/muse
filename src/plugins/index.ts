@@ -57,3 +57,9 @@ export {
 
 // fetch
 export { copyDir, gitClone, fetchMarketplace, fetchPlugin } from "./fetch.js";
+
+// loader / register
+export { loadEnabledPlugins, parsePluginKey } from "./loader.js";
+export type { PluginContributions, LoadPluginsOpts } from "./loader.js";
+export { createPluginContext, substitutePathVars } from "./register.js";
+export type { PluginSink } from "./register.js";
