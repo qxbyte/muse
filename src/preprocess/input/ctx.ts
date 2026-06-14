@@ -62,6 +62,14 @@ export interface InputCtx {
   attachments: InputAttachment[];
   /** 不阻断的告警。 */
   warnings: InputWarning[];
+  /**
+   * 已加载的 skill 名(扩展接入口 §十 v0.3.x @skill mention)。
+   * at-skill-expand stage 据此判定 `@<name>` 是 skill 引用还是文件路径。
+   * 空 / 未注入 → @skill 检测关闭(行为同旧版)。
+   */
+  skillNames?: string[];
+  /** at-skill-expand stage 检测到的待激活 skill 名(caller 在 pipeline 后激活)。 */
+  skillActivations: string[];
   /** 当前 PermissionMode。 */
   mode: PermissionMode;
   /** settings.preprocess.input 配置。 */
@@ -77,6 +85,7 @@ export function createInputCtx(init: {
   mode: PermissionMode;
   settings?: InputPreprocessSettings;
   capabilities?: InputCapabilities;
+  skillNames?: string[];
 }): InputCtx {
   return {
     raw: init.raw,
@@ -88,5 +97,7 @@ export function createInputCtx(init: {
     mode: init.mode,
     settings: init.settings ?? {},
     capabilities: init.capabilities,
+    skillNames: init.skillNames,
+    skillActivations: [],
   };
 }

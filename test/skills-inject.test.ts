@@ -68,6 +68,26 @@ describe("renderAvailableSkillsSection", () => {
     expect(out).toContain("visible");
     expect(out).not.toContain("hidden");
   });
+
+  it("glob 未挂载(mounted=false)→ 不在列表(扩展接入口 §十)", () => {
+    const skills = [
+      mkSkill({ name: "always-on", description: "always mounted desc" }),
+      { ...mkSkill({ name: "tf-only", description: "terraform skill desc" }), mounted: false },
+    ];
+    const out = renderAvailableSkillsSection(skills);
+    expect(out).toContain("always-on");
+    expect(out).not.toContain("tf-only");
+  });
+
+  it("mounted=true / undefined → 在列表(向后兼容)", () => {
+    const skills = [
+      { ...mkSkill({ name: "mounted-skill", description: "mounted desc here" }), mounted: true },
+      mkSkill({ name: "legacy-skill", description: "legacy no mounted field" }), // mounted undefined
+    ];
+    const out = renderAvailableSkillsSection(skills);
+    expect(out).toContain("mounted-skill");
+    expect(out).toContain("legacy-skill");
+  });
 });
 
 describe("renderActivatedSkillBody", () => {

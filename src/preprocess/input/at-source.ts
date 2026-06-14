@@ -16,10 +16,12 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import fg from "fast-glob";
 
 export interface AtCandidate {
-  /** 相对 cwd 的路径,UI 直接显示。 */
+  /** 相对 cwd 的路径(或 skill 名),UI 直接显示。 */
   rel: string;
   /** 是否为目录。目录后缀加 `/` 视觉提示 + 选中后继续展开。 */
   isDir: boolean;
+  /** 候选类型:skill = @skill mention(扩展接入口 §十);缺省 = 文件 / 目录。 */
+  kind?: "skill";
 }
 
 /** 全树扫描默认排除模式。 */
@@ -75,15 +77,44 @@ async function loadAllFiles(cwd: string): Promise<AtCandidate[]> {
  *
  * @param cwd 工作目录
  * @param query @ 之后的字符串,可能含 `/` 表示逐级展开
+ * @param skillNames 已加载的 skill 名(扩展接入口 §十 @skill mention);命中的 skill
+ *   排在文件候选前。skill 名无 `/`,故仅在扁平模式参与。
  */
-export async function queryAtCandidates(cwd: string, query: string): Promise<AtCandidate[]> {
-  // 模式 1:query 含 `/` → 按目录展开
+export async function queryAtCandidates(
+  cwd: string,
+  query: string,
+  skillNames?: string[],
+): Promise<AtCandidate[]> {
+  // 模式 1:query 含 `/` → 按目录展开(skill 名无 `/`,不参与)
   if (query.includes("/")) {
     return listDir(cwd, query);
   }
-  // 模式 2:扁平 fuzzy 全树
+  // 模式 2:扁平 fuzzy 全树;命中的 skill 候选置顶
+  const skillCands = matchSkillCandidates(skillNames, query);
   const all = await loadAllFiles(cwd);
-  return fuzzyFilter(all, query).slice(0, MAX_RESULTS);
+  const files = fuzzyFilter(all, query).slice(0, MAX_RESULTS);
+  return [...skillCands, ...files];
+}
+
+/** 匹配 skill 名 → AtCandidate(kind:"skill");startsWith 优先,空 query 列全部。 */
+function matchSkillCandidates(skillNames: string[] | undefined, query: string): AtCandidate[] {
+  if (!skillNames || skillNames.length === 0) return [];
+  const q = query.toLowerCase();
+  const scored: Array<{ name: string; score: number }> = [];
+  for (const name of skillNames) {
+    const lc = name.toLowerCase();
+    if (!q) {
+      scored.push({ name, score: 0 });
+    } else if (lc.startsWith(q)) {
+      scored.push({ name, score: 0 });
+    } else if (lc.includes(q)) {
+      scored.push({ name, score: 10 + lc.indexOf(q) });
+    } else if (subsequenceScore(lc, q) >= 0) {
+      scored.push({ name, score: 1000 });
+    }
+  }
+  scored.sort((a, b) => (a.score !== b.score ? a.score - b.score : a.name.localeCompare(b.name)));
+  return scored.map((s) => ({ rel: s.name, isDir: false, kind: "skill" as const }));
 }
 
 async function listDir(cwd: string, query: string): Promise<AtCandidate[]> {

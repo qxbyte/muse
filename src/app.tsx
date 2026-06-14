@@ -403,13 +403,15 @@ export function App({
 
   const [atMatches, setAtMatches] = useState<AtCandidate[]>([]);
   const [atIndex, setAtIndex] = useState(0);
+  // @skill mention(扩展接入口 §十):已加载 skill 名,供 @ 候选置顶 + 提交期激活检测。
+  const skillNames = useMemo(() => skillRegistry?.list().map((s) => s.name), [skillRegistry]);
   useEffect(() => {
     if (atQuery === null) {
       setAtMatches([]);
       return;
     }
     let cancelled = false;
-    queryAtCandidates(cwd, atQuery)
+    queryAtCandidates(cwd, atQuery, skillNames)
       .then((cands) => {
         if (!cancelled) setAtMatches(cands);
       })
@@ -419,7 +421,7 @@ export function App({
     return () => {
       cancelled = true;
     };
-  }, [atQuery, cwd]);
+  }, [atQuery, cwd, skillNames]);
   useEffect(() => {
     if (atIndex >= atMatches.length) setAtIndex(0);
   }, [atMatches, atIndex]);
@@ -921,6 +923,7 @@ export function App({
         mode: permissions.getMode(),
         settings: settings.preprocess?.input,
         capabilities: { supportsImages: activeEntry?.supportsImages ?? false },
+        skillNames,
       });
       const pipeline = InputPipeline({
         pasteRegistry: pasteRegistryRef.current.map,
@@ -940,6 +943,19 @@ export function App({
       if (inputCtx.warnings.length > 0) {
         const msg = inputCtx.warnings.map((w) => `[${w.stage}] ${w.message}`).join("\n");
         appendAssistantText(msg);
+      }
+
+      // @skill mention(扩展接入口 §十):at-skill-expand 检测到的 skill 显式激活
+      // (等价 /skill run,绕过 LLM 自决;允许 hidden skill)。slash 路径不涉及。
+      if (!inputCtx.slashCommand && inputCtx.skillActivations.length > 0) {
+        const agent = agentRef.current;
+        const notes: string[] = [];
+        for (const name of inputCtx.skillActivations) {
+          // null=成功,不能用 `?? "agent not ready"`(会把成功误判为错误);分别处理。
+          const reason = agent ? await agent.activateSkillByName(name) : "agent not ready";
+          notes.push(reason ? `✦ skill "${name}" not activated: ${reason}` : `✦ skill "${name}" activated`);
+        }
+        if (notes.length > 0) appendAssistantText(notes.join("\n"));
       }
 
       // UserPromptSubmit hook:slash 命令不触发(slash 走系统自处理路径,不上 LLM)
