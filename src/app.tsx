@@ -58,6 +58,7 @@ import {
   type SlashCommand,
   type SlashCommandResult,
 } from "./slash/index.js";
+import { skillsToSlashCommands } from "./slash/skill-commands.js";
 
 export interface AppProps {
   llm: LLMClient;
@@ -360,8 +361,12 @@ export function App({
   const slash = useMemo(() => {
     const r = new SlashRegistry();
     r.registerAll(BUILTIN_SLASH_COMMANDS);
+    // 每个 skill 注册成一条 /<name>(扩展接入口 §五.7;撞内置名加 skill: 前缀)。
+    if (skillRegistry) {
+      r.registerAll(skillsToSlashCommands(skillRegistry.list(), (n) => r.get(n) !== undefined));
+    }
     return r;
-  }, []);
+  }, [skillRegistry]);
 
   // input.startsWith("/") && 命令名阶段（无空格）→ 显示匹配候选
   const autocomplete = useMemo<{ matches: SlashCommand[]; query: string } | null>(() => {
