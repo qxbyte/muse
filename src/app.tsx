@@ -818,7 +818,13 @@ export function App({
           // history 锁定在 /btw 触发的瞬间——后续即使主对话有新消息，/btw 看到的也是当时的快照
           setBtwRequest({ question, history: messagesRef.current, resolve });
         }),
-      activateSkill: (name) => agentRef.current?.activateSkillByName(name) ?? "agent not ready",
+      activateSkill: async (name) => {
+        const agent = agentRef.current;
+        if (!agent) return "agent not ready";
+        // 注意:activateSkillByName 成功返回 null,不能用 `?? "agent not ready"`
+        // 兜底(null 会被误判成错误);只在 agent 未就绪时返回该串。
+        return agent.activateSkillByName(name);
+      },
       openInEditor: (filePath) =>
         new Promise<void>((resolve, reject) => {
           // 让出 TTY 给外部编辑器(vi/vim/nano/code 等)。

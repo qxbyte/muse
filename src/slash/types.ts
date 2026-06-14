@@ -60,10 +60,11 @@ export interface SlashActions {
   openInEditor(filePath: string): Promise<void>;
   /**
    * Skills(扩展接入口 §五.7.2):显式触发 skill,把 body 推入 agent 的 skillState。
-   * 返回错误信息(skill 不存在 / hidden)或 null(成功)。
+   * 返回错误信息(skill 不存在 / hidden / 被 SkillActivate hook block)或 null(成功)。
    * 显式调用绕过"text 匹配"路径,disable-model-invocation=true 的也能强制触发。
+   * async:激活会触发 SkillActivate hook(§五.9,可 block)。
    */
-  activateSkill(name: string): string | null;
+  activateSkill(name: string): Promise<string | null>;
 }
 
 export interface SlashCommandContext {

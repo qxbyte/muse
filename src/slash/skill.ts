@@ -17,7 +17,7 @@ export const SKILL: SlashCommand = {
   name: "skill",
   description: "manage skills (list / info / run)",
   argsHint: "[list | info <name> | run <name>]",
-  execute(ctx: SlashCommandContext): SlashCommandResult {
+  async execute(ctx: SlashCommandContext): Promise<SlashCommandResult> {
     const args = ctx.args.trim();
     if (!args || args === "list") return runList(ctx.skillRegistry);
 
@@ -60,9 +60,9 @@ function runInfo(registry: SkillRegistry | undefined, name: string): SlashComman
   return { display: renderSkillInfo(skill) };
 }
 
-function runActivate(ctx: SlashCommandContext, name: string): SlashCommandResult {
+async function runActivate(ctx: SlashCommandContext, name: string): Promise<SlashCommandResult> {
   if (!name) return { display: "Usage: /skill run <name>" };
-  const reason = ctx.actions.activateSkill(name);
+  const reason = await ctx.actions.activateSkill(name);
   if (reason) return { display: `Failed to activate skill: ${reason}` };
   return { display: `Skill "${name}" activated. Its body will be injected on the next LLM turn.` };
 }

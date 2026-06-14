@@ -25,7 +25,8 @@ export type HookPoint =
   | "PostToolUse"
   | "PreCompact"
   | "PostCompact"
-  | "MemoryPromote";
+  | "MemoryPromote"
+  | "SkillActivate";
 
 export interface HookSpec {
   /** 工具名 / 路径前缀的正则匹配字符串(不含 /);"" 或缺省视为全匹配 .* 。 */
@@ -50,6 +51,12 @@ export interface HooksConfig {
   PostCompact?: HookSpec[];
   /** I-5:compactMessages 在 promote 每条 fact 到 memory 之前调用;可 block 该条。 */
   MemoryPromote?: HookSpec[];
+  /**
+   * 扩展接入口 §五.9:skill 激活前调用(LLM 自决 + `/skill run` 两轨都触发)。
+   * payload `{ skillName, scope, allowedTools }`,matcher 比 skillName;
+   * block → 该 skill 不激活(审计敏感 skill、按时段/策略限制激活)。
+   */
+  SkillActivate?: HookSpec[];
 }
 
 export interface HookOutput {
@@ -137,6 +144,7 @@ function handleHookError(point: HookPoint, spec: HookSpec, reason: string, logge
 /** 输入哪个字段作 matcher 比较:PreToolUse/PostToolUse 用 toolName,其余按 stage 自身约定。 */
 function pickMatcherKey(input: Record<string, unknown>): string | undefined {
   if (typeof input.toolName === "string") return "toolName";
+  if (typeof input.skillName === "string") return "skillName";
   if (typeof input.path === "string") return "path";
   return undefined;
 }
